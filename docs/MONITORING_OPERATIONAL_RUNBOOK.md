@@ -341,8 +341,8 @@ Use this before declaring monitoring "healthy":
 
 ## References
 
-- [Monitoring Setup Guide](docs/MONITORING_SETUP_GUIDE.md)
-- [Stellar Metrics Guide](docs/metrics/STELLAR_METRICS_GUIDE.md)
+- [Monitoring Setup Guide](MONITORING_SETUP_GUIDE.md)
+- [Stellar Metrics Guide](metrics/STELLAR_METRICS_GUIDE.md)
 - [Prometheus Operator Docs](https://prometheus-operator.dev/)
 - [Grafana Docs](https://grafana.com/docs/grafana/latest/)
 

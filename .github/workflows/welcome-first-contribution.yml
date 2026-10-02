@@ -1,0 +1,87 @@
+name: Welcome First-Time Contributor
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+# Minimal permissions: only what is needed to post a comment.
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  welcome:
+    name: Post welcome comment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for prior contributions and post welcome
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const author = context.payload.sender.login;
+            const owner  = context.repo.owner;
+            const repo   = context.repo.repo;
+
+            // ── Duplicate-guard ──────────────────────────────────────────────
+            // Collect all issues AND pull requests already opened by this author.
+            // If more than one exists the current event is not their first, so
+            // we skip the comment to prevent duplicate greetings.
+
+            const [issuesResult, prsResult] = await Promise.all([
+              github.rest.issues.listForRepo({
+                owner,
+                repo,
+                creator: author,
+                state: 'all',
+                per_page: 2,          // we only need to know if count > 1
+              }),
+              github.rest.pulls.list({
+                owner,
+                repo,
+                state: 'all',
+                per_page: 100,
+              }),
+            ]);
+
+            // issues.listForRepo returns both issues and PRs; filter to real issues.
+            const authorIssues = issuesResult.data.filter(i => !i.pull_request);
+            const authorPRs    = prsResult.data.filter(pr => pr.user.login === author);
+
+            const totalContributions = authorIssues.length + authorPRs.length;
+
+            if (totalContributions > 1) {
+              core.info(`${author} has ${totalContributions} prior contributions — skipping welcome.`);
+              return;
+            }
+
+            // ── Build comment from WELCOME_TEMPLATE.md ───────────────────────
+            const { data: templateFile } = await github.rest.repos.getContent({
+              owner,
+              repo,
+              path: '.github/WELCOME_TEMPLATE.md',
+            });
+
+            const body = Buffer.from(templateFile.content, 'base64').toString('utf8');
+
+            // ── Post the comment ─────────────────────────────────────────────
+            if (context.eventName === 'issues') {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: context.payload.issue.number,
+                body,
+              });
+              core.info(`Welcome comment posted on issue #${context.payload.issue.number}`);
+            } else {
+              // pull_request_target
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: context.payload.pull_request.number,
+                body,
+              });
+              core.info(`Welcome comment posted on PR #${context.payload.pull_request.number}`);
+            }

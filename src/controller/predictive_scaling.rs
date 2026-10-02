@@ -14,7 +14,7 @@
 //!
 //! Implements a time-series ledger volume collector and a simple forecasting
 //! model (exponential smoothing / Holt-Winters) to predict the next hour's
-//! load and pre-emptively adjust the HPA `minReplicas` before traffic spikes.
+//! load and preemptively adjust the HPA `minReplicas` before traffic spikes.
 //!
 //! # Architecture
 //!
@@ -61,7 +61,7 @@ use tracing::{debug, info, warn};
 /// Predictive auto-scaling configuration for Horizon nodes.
 ///
 /// Uses double exponential smoothing (Holt-Winters) to forecast ledger
-/// volume and pre-emptively adjust HPA `minReplicas`.
+/// volume and preemptively adjust HPA `minReplicas`.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PredictiveScalingConfig {

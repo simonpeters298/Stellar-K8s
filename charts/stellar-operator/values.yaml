@@ -157,6 +157,8 @@ podDisruptionBudget:
 operator:
   # Log level: debug, info, warn, error
   logLevel: info
+  # Enables AppArmor annotations on operator-managed workload pods.
+  appArmorEnabled: false
   # Enable REST API
   restApiEnabled: true
   # REST API port
@@ -287,6 +289,13 @@ security:
     enabled: true
     ingress:
       namespaceSelector: true
+    # Blanket default-deny baseline applied to additional namespaces beyond the
+    # release namespace (which always gets a default-deny from networkpolicy.yaml).
+    # Any namespace hosting Stellar nodes or the operator's supporting services
+    # can be enumerated here so that pods in it may only reach explicitly allowed
+    # endpoints (zero-trust, issue #1320). The operator reconciler already emits
+    # per-node allow rules; this list provides the undifferentiated default.
+    defaultDenyNamespaces: []
   admissionWebhook:
     failurePolicy: Fail
   imagePolicy:
@@ -431,6 +440,10 @@ otel:
   # Set to true to enable OTLP trace export from the operator.
   # When enabled, OTEL_EXPORTER_OTLP_ENDPOINT is injected into the operator pod.
   enabled: false
+  # Resource service.name used by the unified observability contract (#1481).
+  serviceName: stellar-operator
+  # Optional parent-based ratio injected as OTEL_TRACES_SAMPLER_ARG.
+  samplingRatio: ""
 
   # OTLP gRPC endpoint for the operator to send spans to.
   # Typically points to the in-cluster OTel Collector service.

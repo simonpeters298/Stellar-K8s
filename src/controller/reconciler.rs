@@ -80,12 +80,14 @@ use super::finalizers::STELLAR_NODE_FINALIZER;
 use super::health;
 use super::kms_secret;
 use super::label_propagation::LabelPropagator;
+use super::ledger_migration;
 use super::maintenance;
 #[cfg(feature = "metrics")]
 use super::metrics;
 use super::mtls;
 use super::oci_snapshot;
 use super::operator_config::{hardcoded_defaults, OperatorConfig};
+use super::peer_connectivity;
 use super::peer_discovery;
 use super::phases::{PhaseMachine, ReconcilePhase};
 use super::pss;
@@ -470,6 +472,31 @@ pub async fn run_controller(state: Arc<ControllerState>) -> Result<()> {
         }
     });
 
+    // Planned-maintenance orchestrator (MaintenancePlan CR). Complements, does
+    // not replace, the reactive NodeDrainOrchestrator above.
+    let plan_client = client.clone();
+    let plan_reporter = state.event_reporter.clone();
+    tokio::spawn(async move {
+        if let Err(e) =
+            maintenance::run_maintenance_plan_controller(plan_client, plan_reporter).await
+        {
+            error!("MaintenancePlan controller stopped with error: {}", e);
+        }
+    });
+
+    // Preemptive migration for scheduled-node-group / spot interruption signals (#1484).
+    let preemptive = Arc::new(
+        super::preemptive_spot_migration::PreemptiveSpotMigrator::new(
+            client.clone(),
+            state.event_reporter.clone(),
+        ),
+    );
+    tokio::spawn(async move {
+        if let Err(e) = preemptive.run().await {
+            error!("Preemptive spot migrator stopped with error: {}", e);
+        }
+    });
+
     // Start Spot/Preemptible Drain Handler in the background.
     // NODE_NAME must be injected via the Downward API (spec.nodeName).
     if let Ok(node_name) = std::env::var("NODE_NAME") {
@@ -551,6 +578,13 @@ pub async fn run_controller(state: Arc<ControllerState>) -> Result<()> {
             error!("DB Compaction Daemon stopped with error: {}", e);
         }
     });
+    // Start Control-Plane Health Monitor (graceful degradation, #1494)
+    let cph_monitor = crate::degradation::monitor::ControlPlaneHealthMonitor::new(
+        client.clone(),
+        crate::degradation::DegradationGate::global().clone(),
+        state.is_leader.clone(),
+    );
+    tokio::spawn(cph_monitor.run());
 
     // Start Audit Worker if enabled
     if state.operator_config.audit.enabled {
@@ -1267,6 +1301,20 @@ fn reconcile(
             return Ok(Action::requeue(Duration::from_secs(5)));
         }
 
+        // While etcd is unavailable the operator makes no writes; running pods
+        // keep serving on their last applied configuration (#1494).
+        let gate = crate::degradation::DegradationGate::global();
+        if let Err(level) = gate.check(crate::degradation::OperatorAction::Write) {
+            info!(
+                "Control plane is {:?}; deferring reconciliation of {}/{}",
+                level, namespace, node_name
+            );
+            if let Ok(mut machine) = phases.lock() {
+                machine.succeed("control plane frozen; pass deferred");
+            }
+            return Ok(Action::requeue(Duration::from_secs(30)));
+        }
+
         let res = {
             let client = ctx.client.clone();
             let api: Api<StellarNode> = Api::namespaced(client.clone(), &namespace);
@@ -1592,6 +1640,53 @@ pub(crate) fn apply_stellar_node(
                 }
             )
             .await?;
+
+            if node
+                .metadata
+                .annotations
+                .as_ref()
+                .and_then(|annotations| annotations.get("stellar.org/request-ledger-export"))
+                .is_some_and(|value| value == "true" || value == "1")
+            {
+                if let Some(export) = node
+                    .spec
+                    .storage
+                    .snapshot_ref
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.export.as_ref())
+                {
+                    let ledger_seq = node
+                        .status
+                        .as_ref()
+                        .and_then(|status| status.ledger_sequence)
+                        .unwrap_or(0);
+                    if ledger_seq > 0
+                        && ledger_migration::ensure_export_job(
+                            &client,
+                            &node,
+                            export,
+                            ledger_seq,
+                        )
+                        .await?
+                        .is_some()
+                    {
+                        let api: Api<StellarNode> = Api::namespaced(client.clone(), &namespace);
+                        api.patch(
+                            &name,
+                            &PatchParams::default(),
+                            &Patch::Merge(serde_json::json!({
+                                "metadata": { "annotations": { "stellar.org/request-ledger-export": null } }
+                            })),
+                        )
+                        .await?;
+                    }
+                } else {
+                    warn!(
+                        "Ledger export requested for {}/{} without storage.snapshotRef.export",
+                        namespace, name
+                    );
+                }
+            }
 
             return Ok(Action::requeue(Duration::from_secs(60)));
         }
@@ -2877,7 +2972,21 @@ pub(crate) fn apply_stellar_node(
         // 9. Auto-remediation check
         if health_result.healthy && !node.spec.suspended {
             let stale_check = remediation::check_stale_node(&node, health_result.ledger_sequence);
-            if stale_check.is_stale && remediation::can_remediate(&node) {
+            let degradation = if stale_check.is_stale {
+                crate::degradation::DegradationGate::global()
+                    .check(crate::degradation::OperatorAction::Disruptive)
+                    .err()
+            } else {
+                None
+            };
+            if let Some(level) = degradation {
+                // Stale signals may stem from the degraded control plane; never
+                // restart serving pods on them (#1494).
+                info!(
+                    "Control plane is {:?}; withholding stale-ledger restart of {}/{}",
+                    level, namespace, name
+                );
+            } else if stale_check.is_stale && remediation::can_remediate(&node) {
                 if stale_check.recommended_action == remediation::RemediationLevel::Restart {
                     apply_or_emit!(
                         &ctx,
@@ -3313,25 +3422,149 @@ pub(crate) fn apply_stellar_node(
                             .and_then(|a| a.get("stellar.org/current-protocol"))
                             .and_then(|v| v.parse().ok())
                             .unwrap_or(0);
-                        let now_unix = chrono::Utc::now().timestamp();
-                        match controller
-                            .plan_and_sync(&client, &node, &timeline, current_protocol, now_unix)
-                            .await
+                        let required_caps: Vec<String> = node
+                            .metadata
+                            .annotations
+                            .as_ref()
+                            .and_then(|annotations| annotations.get("stellar.org/required-caps"))
+                            .map(|caps| {
+                                caps.split(',')
+                                    .map(str::trim)
+                                    .filter(|cap| !cap.is_empty())
+                                    .map(str::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let required_xdr_version: u32 = node
+                            .metadata
+                            .annotations
+                            .as_ref()
+                            .and_then(|annotations| {
+                                annotations.get("stellar.org/required-xdr-version")
+                            })
+                            .and_then(|value| value.parse().ok())
+                            .unwrap_or(0);
+                        let mut compatibility_blocked = false;
+                        if !required_caps.is_empty()
+                            || required_xdr_version > 0
+                            || current_protocol > 0
                         {
-                            Ok(Some(plan)) => {
-                                info!(
-                                    "GitOps upgrade planned for {}/{}: protocol v{} via {}",
-                                    namespace, name, plan.target_protocol, engine_str
-                                );
+                            let current_version = node
+                                .spec
+                                .version
+                                .rsplit(':')
+                                .next()
+                                .unwrap_or(&node.spec.version);
+                            match crate::protocol_compatibility::check_compatibility(
+                                current_version,
+                                current_protocol,
+                                required_xdr_version,
+                                &required_caps,
+                            ) {
+                                Ok(report) if !report.compatible => {
+                                    compatibility_blocked = true;
+                                    let mut incompatibilities = Vec::new();
+                                    if !report.protocol_compatible {
+                                        incompatibilities.push(format!(
+                                            "core protocol support is below network protocol {current_protocol}"
+                                        ));
+                                    }
+                                    if !report.xdr_compatible {
+                                        incompatibilities.push(format!(
+                                            "core XDR version does not support required XDR version {required_xdr_version}"
+                                        ));
+                                    }
+                                    if !report.unsupported_caps.is_empty() {
+                                        incompatibilities.push(format!(
+                                            "unsupported CAPs: {}",
+                                            report.unsupported_caps.join(", ")
+                                        ));
+                                    }
+                                    let detail = incompatibilities.join("; ");
+                                    let recommendation = report
+                                        .recommended_version
+                                        .as_deref()
+                                        .unwrap_or("a release supporting the required protocol/CAPs/XDR");
+                                    warn!(
+                                        "Protocol upgrade blocked for {}/{}: core {} {}; upgrade to {}",
+                                        namespace, name, current_version, detail, recommendation
+                                    );
+                                    let annotations = serde_json::json!({
+                                        "stellar.org/protocol-compatibility-warning": format!(
+                                            "{detail}; recommended stellar-core version: {recommendation}"
+                                        )
+                                    });
+                                    let nodes: Api<StellarNode> = if let Some(ns) = &ctx.watch_namespace {
+                                        Api::namespaced(client.clone(), ns)
+                                    } else {
+                                        Api::all(client.clone())
+                                    };
+                                    if let Err(error) = nodes
+                                        .patch(
+                                            &name,
+                                            &PatchParams::default(),
+                                            &Patch::Merge(&serde_json::json!({
+                                                "metadata": { "annotations": annotations }
+                                            })),
+                                        )
+                                        .await
+                                    {
+                                        warn!("Failed to publish CAP compatibility warning: {error}");
+                                    }
+                                }
+                                Ok(report) if report.compatible => {
+                                    let nodes: Api<StellarNode> = if let Some(ns) = &ctx.watch_namespace {
+                                        Api::namespaced(client.clone(), ns)
+                                    } else {
+                                        Api::all(client.clone())
+                                    };
+                                    if let Err(error) = nodes
+                                        .patch(
+                                            &name,
+                                            &PatchParams::default(),
+                                            &Patch::Merge(&serde_json::json!({
+                                                "metadata": {
+                                                    "annotations": {
+                                                        "stellar.org/protocol-compatibility-warning": null
+                                                    }
+                                                }
+                                            })),
+                                        )
+                                        .await
+                                    {
+                                        warn!("Failed to clear protocol compatibility warning: {error}");
+                                    }
+                                }
+                                Err(error) => {
+                                    compatibility_blocked = true;
+                                    warn!("Could not evaluate protocol compatibility: {error}");
+                                }
+                                _ => {}
                             }
-                            Ok(None) => {
-                                debug!("No GitOps upgrade step due for {}/{}", namespace, name);
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "GitOps upgrade planning failed for {}/{}: {}",
-                                    namespace, name, e
-                                );
+                        }
+                        if compatibility_blocked {
+                            debug!("Skipping GitOps upgrade for {}/{} until CAP compatibility is restored", namespace, name);
+                        } else {
+                            let now_unix = chrono::Utc::now().timestamp();
+                            match controller
+                                .plan_and_sync(&client, &node, &timeline, current_protocol, now_unix)
+                                .await
+                            {
+                                Ok(Some(plan)) => {
+                                    info!(
+                                        "GitOps upgrade planned for {}/{}: protocol v{} via {}",
+                                        namespace, name, plan.target_protocol, engine_str
+                                    );
+                                }
+                                Ok(None) => {
+                                    debug!("No GitOps upgrade step due for {}/{}", namespace, name);
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "GitOps upgrade planning failed for {}/{}: {}",
+                                        namespace, name, e
+                                    );
+                                }
                             }
                         }
                     }
@@ -4061,6 +4294,55 @@ pub(crate) fn apply_phase_conditions(
     }
 }
 
+/// Probe a validator's configured peers and fold the result into `conditions`.
+///
+/// Without this a validator that cannot reach any peer still reports `Ready`:
+/// `stellar-core` logs a failed overlay connection, nothing restarts, and the
+/// node is simply absent from quorum. The `PeerConnectivity` condition makes
+/// that state visible, and the reconciler requeues well inside the 60 s budget
+/// this issue asks for.
+///
+/// The condition is removed rather than left stale for nodes the check does not
+/// apply to (non-validators, suspended nodes, validators with no peers).
+async fn apply_peer_connectivity_condition(conditions: &mut Vec<Condition>, node: &StellarNode) {
+    let peers = if node.spec.suspended {
+        // Replicas are scaled to 0, so there is no overlay to diagnose.
+        Vec::new()
+    } else {
+        peer_connectivity::known_peers_for_node(node)
+    };
+
+    if peers.is_empty() {
+        conditions::remove_condition(conditions, conditions::CONDITION_TYPE_PEER_CONNECTIVITY);
+        return;
+    }
+
+    let report = peer_connectivity::probe_peers(
+        &peers,
+        Duration::from_secs(peer_connectivity::DEFAULT_PROBE_TIMEOUT_SECS),
+        peer_connectivity::DEFAULT_INTERVAL_SECS,
+    )
+    .await;
+    let verdict = peer_connectivity::connectivity_verdict(&report);
+
+    if report.is_fully_degraded() {
+        warn!(
+            "node {}: all {} configured peers unreachable: {}",
+            node.name_any(),
+            report.peers.len(),
+            verdict.message
+        );
+    }
+
+    conditions::set_condition(
+        conditions,
+        conditions::CONDITION_TYPE_PEER_CONNECTIVITY,
+        verdict.status,
+        verdict.reason,
+        &verdict.message,
+    );
+}
+
 #[allow(deprecated)]
 #[instrument(skip(client, node, message), fields(name = %node.name_any(), namespace = node.namespace(), phase))]
 async fn update_status(
@@ -4090,6 +4372,9 @@ async fn update_status(
         .unwrap_or_default();
 
     apply_phase_conditions(&mut conditions, phase, message.as_deref());
+
+    // Peer reachability for validators (#1561).
+    apply_peer_connectivity_condition(&mut conditions, node).await;
 
     // Set observed generation on all conditions
     if let Some(gen) = observed_generation {
@@ -4235,6 +4520,56 @@ async fn run_archive_integrity_check(
                 "All {} archive(s) are within {} ledgers of the node",
                 results.len(),
                 ARCHIVE_LAG_THRESHOLD
+            ),
+        );
+    }
+
+    // Check history archive version compatibility against core binary version before catchup
+    let compat_results = crate::controller::archive_health::check_archives_version_compatibility(
+        archive_urls,
+        &node.spec.version,
+        Some(std::time::Duration::from_secs(5)),
+    )
+    .await;
+
+    let incompatible: Vec<_> = compat_results.iter().filter(|r| !r.is_compatible).collect();
+    if !incompatible.is_empty() {
+        let msg = incompatible
+            .iter()
+            .map(|r| r.summary())
+            .collect::<Vec<_>>()
+            .join("; ");
+        warn!(
+            "Incompatible history archive version detected for {}/{}: {}",
+            namespace, name, msg
+        );
+        publish_stellar_event!(
+            client,
+            reporter,
+            node,
+            EventType::Warning,
+            "ArchiveVersionIncompatible",
+            "ArchiveCompatibility",
+            &msg,
+        )
+        .await?;
+        conditions::set_condition(
+            &mut conds,
+            "ArchiveVersionCompatible",
+            conditions::CONDITION_STATUS_FALSE,
+            "IncompatibleArchiveVersion",
+            &msg,
+        );
+    } else {
+        conditions::set_condition(
+            &mut conds,
+            "ArchiveVersionCompatible",
+            conditions::CONDITION_STATUS_TRUE,
+            "ArchiveCompatible",
+            &format!(
+                "All {} configured archive(s) are state-version compatible with stellar-core {}",
+                archive_urls.len(),
+                node.spec.version
             ),
         );
     }
@@ -4872,6 +5207,6 @@ async fn hardware_generation_for_metrics(client: &Client, node: &StellarNode) ->
                 err
             );
             "unknown".to_string()
-        }
+        },
     }
 }

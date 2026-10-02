@@ -82,6 +82,10 @@ spec:
                   fieldPath: metadata.name
             - name: OPERATOR_NAMESPACE
               value: {{ .Release.Namespace | quote }}
+            {{- if .Values.operator.appArmorEnabled }}
+            - name: STELLAR_APPARMOR_ENABLED
+              value: "true"
+            {{- end }}
             {{- if .Values.operator.restApiEnabled }}
             - name: REST_API_PORT
               value: {{ .Values.operator.restApiPort | quote }}
@@ -93,9 +97,23 @@ spec:
             - name: MALLOC_CONF
               value: "prof:true,prof_active:true,lg_prof_sample:19"
             {{- end }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
             {{- if .Values.otel.enabled }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.otel.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .Values.otel.serviceName | default "stellar-operator" | quote }}
+            {{- if .Values.otel.samplingRatio }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .Values.otel.samplingRatio | quote }}
+            {{- end }}
             {{- end }}
           volumeMounts:
             - name: operator-config

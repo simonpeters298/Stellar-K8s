@@ -27,6 +27,11 @@
 //! - `stellar_node_active_connections` (gauge): active peer connections labeled by namespace/name/node_type/network/hardware_generation.
 //! - `stellar_horizon_request_error_ratio` (gauge): ratio (0.0-1.0) of Horizon API requests returning 4xx/5xx, labeled by namespace/name/node_type/network/hardware_generation.
 //! - `stellar_horizon_db_query_duration_seconds` (gauge): average Horizon database query duration in seconds, labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_traffic_shift_phase` (gauge): phase of a health-gated multi-region traffic shift plan (0=Idle, 1=Gated, 2=Draining, 3=Shifting, 4=Soaking, 5=Completed, 6=Aborted, 7=Failed).
+//! - `stellar_traffic_shift_primary_weight_percent` (gauge): share of traffic still served by the primary region (0-100).
+//! - `stellar_traffic_shift_rto_seconds` (gauge): measured recovery time of the last completed traffic shift, in seconds.
+//! - `stellar_job_orphans_reclaimed_total` (counter): reclaimed Job/Pod artifacts labeled by namespace/kind/orphan class.
+//! - `stellar_job_orphan_pods_outstanding` (gauge): orphaned Job pods still pending after a sweep, labeled by namespace.
 
 use std::sync::atomic::{AtomicI64, AtomicU64};
 
@@ -221,6 +226,41 @@ pub struct HorizonMigrationLabels {
     pub status: String, // "success" or "failed"
 }
 
+/// Labels identifying one watched Stellar asset.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct AssetLabels {
+    pub namespace: String,
+    pub monitor: String,
+    pub network: String,
+    pub asset_code: String,
+    pub issuer: String,
+    pub contract_id: String,
+}
+
+/// Current asset supply in stroops (1 asset unit = 10^7 stroops).
+pub static ASSET_SUPPLY_STROOPS: Lazy<Family<AssetLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Current number of accounts holding the watched asset.
+pub static ASSET_HOLDERS: Lazy<Family<AssetLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Current asset liquidity in stroops.
+pub static ASSET_LIQUIDITY_STROOPS: Lazy<Family<AssetLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Signed supply change percentage observed in the most recently processed ledger.
+pub static ASSET_SUPPLY_CHANGE_PERCENT: Lazy<Family<AssetLabels, Gauge<f64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Number of large supply changes observed for a watched asset.
+pub static ASSET_LARGE_SUPPLY_CHANGES_TOTAL: Lazy<Family<AssetLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Number of clawback ledger changes observed for the watched asset.
+pub static ASSET_CLAWBACK_EVENTS_TOTAL: Lazy<Family<AssetLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
 /// Histogram tracking reconcile duration (seconds)
 pub static RECONCILE_DURATION_SECONDS: Lazy<Family<ReconcileLabels, Histogram>> = Lazy::new(|| {
     fn reconcile_histogram() -> Histogram {
@@ -335,6 +375,28 @@ pub static DR_DRILL_EXECUTIONS_TOTAL: Lazy<Family<DRDrillLabels, Counter<u64, At
 pub static DR_DRILL_TIME_TO_RECOVERY_MS: Lazy<Family<DRDrillLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
 
+/// Labels for health-gated multi-region traffic shift metrics.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct TrafficShiftLabels {
+    pub namespace: String,
+    pub name: String,
+    /// "failover" or "failback".
+    pub direction: String,
+}
+
+/// Gauge of the current phase of a traffic shift plan, as the phase enum value.
+pub static TRAFFIC_SHIFT_PHASE: Lazy<Family<TrafficShiftLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge of the primary region's share of traffic, in percent (0-100).
+pub static TRAFFIC_SHIFT_PRIMARY_WEIGHT_PERCENT: Lazy<
+    Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>,
+> = Lazy::new(Family::default);
+
+/// Gauge of the measured RTO of the last completed shift, in seconds.
+pub static TRAFFIC_SHIFT_RTO_SECONDS: Lazy<Family<TrafficShiftLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
 /// Labels for traffic shaping metrics.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct TrafficRequestLabels {
@@ -365,6 +427,58 @@ pub static TRAFFIC_SYSTEM_LOAD_PERCENT: Lazy<Family<TrafficNodeLabels, Gauge<i64
 /// Gauge tracking circuit breaker state (0=closed, 1=open, 2=half-open).
 pub static TRAFFIC_CIRCUIT_BREAKER_STATE: Lazy<Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct FeeMarketLabels {
+    pub network: String,
+    pub fee_type: String,
+}
+
+pub static FEE_MARKET_P95_STROOPS: Lazy<Family<FeeMarketLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_SPIKE_THRESHOLD_STROOPS: Lazy<Family<FeeMarketLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_BURN_STROOPS_TOTAL: Lazy<Family<FeeMarketLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_INCLUSION_RATE: Lazy<Family<FeeMarketLabels, Gauge<f64, AtomicU64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_LEDGER: Lazy<Family<FeeMarketLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Labels for control-plane degradation metrics (#1494).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ControlPlaneComponentLabels {
+    pub component: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct DegradationTransitionLabels {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct SuppressedActionLabels {
+    pub action: String,
+}
+
+/// Current degradation level (0=Normal, 1=Reduced, 2=Degraded, 3=Frozen).
+pub static CONTROL_PLANE_DEGRADATION_LEVEL: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Per-component state (1=healthy, 0=unhealthy, -1=unknown).
+pub static CONTROL_PLANE_COMPONENT_STATE: Lazy<
+    Family<ControlPlaneComponentLabels, Gauge<i64, AtomicI64>>,
+> = Lazy::new(Family::default);
+
+/// Degradation level transitions.
+pub static CONTROL_PLANE_DEGRADATION_TRANSITIONS: Lazy<
+    Family<DegradationTransitionLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Operator actions withheld by the degradation gate.
+pub static CONTROL_PLANE_SUPPRESSED_ACTIONS: Lazy<
+    Family<SuppressedActionLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
 
 /// Global metrics registry
 pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
@@ -571,6 +685,49 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         DR_DRILL_TIME_TO_RECOVERY_MS.clone(),
     );
 
+    // Register health-gated multi-region traffic shift metrics
+    registry.register(
+        "stellar_traffic_shift_phase",
+        "Phase of the health-gated traffic shift plan (0=Idle, 1=Gated, 2=Draining, 3=Shifting, 4=Soaking, 5=Completed, 6=Aborted, 7=Failed)",
+        TRAFFIC_SHIFT_PHASE.clone(),
+    );
+    registry.register(
+        "stellar_traffic_shift_primary_weight_percent",
+        "Share of traffic still served by the primary region, in percent (0-100)",
+        TRAFFIC_SHIFT_PRIMARY_WEIGHT_PERCENT.clone(),
+    );
+    registry.register(
+        "stellar_traffic_shift_rto_seconds",
+        "Measured recovery time of the last completed traffic shift, in seconds",
+        TRAFFIC_SHIFT_RTO_SECONDS.clone(),
+    );
+
+    registry.register(
+        "stellar_fee_market_p95_stroops",
+        "95th percentile transaction inclusion fee in stroops by network and transaction class",
+        FEE_MARKET_P95_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_spike_threshold_stroops",
+        "Configured fee spike threshold in stroops",
+        FEE_MARKET_SPIKE_THRESHOLD_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_burn_stroops_total",
+        "Cumulative transaction fees burned in stroops by network and transaction class",
+        FEE_MARKET_BURN_STROOPS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_inclusion_rate",
+        "Fraction of submitted transactions included in the observed ledger",
+        FEE_MARKET_INCLUSION_RATE.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_ledger",
+        "Latest ledger sequence observed by the fee market collector",
+        FEE_MARKET_LEDGER.clone(),
+    );
+
     // Register PVC disk scaling metrics
     registry.register(
         "stellar_pvc_disk_usage_percent",
@@ -603,6 +760,37 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         "stellar_snapshot_integrity_check_duration_ms",
         "Duration of snapshot integrity check in milliseconds",
         SNAPSHOT_INTEGRITY_CHECK_DURATION_MS.clone(),
+    );
+
+    registry.register(
+        "stellar_asset_supply_stroops",
+        "Current watched asset supply in stroops",
+        ASSET_SUPPLY_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_asset_holders",
+        "Current number of accounts holding a watched asset",
+        ASSET_HOLDERS.clone(),
+    );
+    registry.register(
+        "stellar_asset_liquidity_stroops",
+        "Current watched asset liquidity in stroops",
+        ASSET_LIQUIDITY_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_asset_supply_change_percent",
+        "Signed supply change percentage observed in the latest ledger",
+        ASSET_SUPPLY_CHANGE_PERCENT.clone(),
+    );
+    registry.register(
+        "stellar_asset_large_supply_changes_total",
+        "Number of supply changes above the monitor's configured threshold",
+        ASSET_LARGE_SUPPLY_CHANGES_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_asset_clawback_events_total",
+        "Total observed clawback ledger changes for watched assets",
+        ASSET_CLAWBACK_EVENTS_TOTAL.clone(),
     );
 
     registry.register(
@@ -647,6 +835,18 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         "stellar_operator_ready",
         "1 if the operator is ready (K8s watch healthy and first reconcile complete), 0 otherwise",
         OPERATOR_READY_STATUS.clone(),
+    );
+
+    // ── Job / CronJob orphan reclamation metrics ─────────────────────────
+    registry.register(
+        "stellar_job_orphans_reclaimed_total",
+        "Total number of orphaned Job/Pod artifacts reclaimed, by namespace, kind and orphan class",
+        JOB_ORPHANS_RECLAIMED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_job_orphan_pods_outstanding",
+        "Number of orphaned Job pods still awaiting reclamation after a sweep",
+        JOB_ORPHAN_PODS_OUTSTANDING.clone(),
     );
 
     // ── Observability Pipeline metrics ────────────────────────────────────
@@ -724,6 +924,53 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         "stellar_observability_baseline_samples",
         "Number of samples in the baseline for each metric",
         OBSERVABILITY_BASELINE_SAMPLES.clone(),
+    );
+
+    registry.register(
+        "stellar_control_plane_degradation_level",
+        "Control-plane degradation level (0=Normal, 1=Reduced, 2=Degraded, 3=Frozen)",
+        CONTROL_PLANE_DEGRADATION_LEVEL.clone(),
+    );
+    registry.register(
+        "stellar_control_plane_component_state",
+        "Control-plane component state (1=healthy, 0=unhealthy, -1=unknown)",
+        CONTROL_PLANE_COMPONENT_STATE.clone(),
+    );
+    registry.register(
+        "stellar_control_plane_degradation_transitions",
+        "Control-plane degradation level transitions",
+        CONTROL_PLANE_DEGRADATION_TRANSITIONS.clone(),
+    );
+    registry.register(
+        "stellar_control_plane_suppressed_actions",
+        "Operator actions withheld because of control-plane degradation",
+        CONTROL_PLANE_SUPPRESSED_ACTIONS.clone(),
+    );
+
+    registry.register(
+        "stellar_cost_savings_usd",
+        "Realized cost savings versus on-demand (USD)",
+        COST_SAVINGS_USD.clone(),
+    );
+    registry.register(
+        "stellar_cost_savings_hourly_usd",
+        "Realized cost savings in the current UTC hour (USD)",
+        COST_SAVINGS_HOURLY_USD.clone(),
+    );
+    registry.register(
+        "stellar_spot_savings_usd",
+        "Spot-instance savings (alias of realized cost savings)",
+        SPOT_SAVINGS_USD.clone(),
+    );
+    registry.register(
+        "stellar_best_effort_spot_placement_ratio",
+        "Share of best-effort pods on spot capacity",
+        BEST_EFFORT_SPOT_PLACEMENT_RATIO.clone(),
+    );
+    registry.register(
+        "stellar_critical_on_spot_pods",
+        "Critical-tier pods currently scheduled onto spot (must be 0)",
+        CRITICAL_ON_SPOT_PODS.clone(),
     );
 
     registry
@@ -1429,6 +1676,57 @@ pub fn observe_dr_drill_execution(
     DR_DRILL_EXECUTIONS_TOTAL.get_or_create(&labels).inc();
 }
 
+/// Set the current phase of a health-gated traffic shift plan.
+///
+/// Phase values mirror `TrafficShiftPhase`: Idle=0, Gated=1, Draining=2,
+/// Shifting=3, Soaking=4, Completed=5, Aborted=6, Failed=7.
+pub fn set_traffic_shift_phase(
+    namespace: &str,
+    name: &str,
+    direction: &str,
+    phase: crate::crd::TrafficShiftPhase,
+) {
+    let labels = TrafficShiftLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        direction: direction.to_string(),
+    };
+    let value = match phase {
+        crate::crd::TrafficShiftPhase::Idle => 0,
+        crate::crd::TrafficShiftPhase::Gated => 1,
+        crate::crd::TrafficShiftPhase::Draining => 2,
+        crate::crd::TrafficShiftPhase::Shifting => 3,
+        crate::crd::TrafficShiftPhase::Soaking => 4,
+        crate::crd::TrafficShiftPhase::Completed => 5,
+        crate::crd::TrafficShiftPhase::Aborted => 6,
+        crate::crd::TrafficShiftPhase::Failed => 7,
+    };
+    TRAFFIC_SHIFT_PHASE.get_or_create(&labels).set(value);
+}
+
+/// Set the share of traffic still served by the primary region, in percent.
+pub fn set_traffic_shift_primary_weight(namespace: &str, name: &str, primary_percent: u32) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_SHIFT_PRIMARY_WEIGHT_PERCENT
+        .get_or_create(&labels)
+        .set(i64::from(primary_percent));
+}
+
+/// Set the measured recovery time of the last completed traffic shift.
+pub fn set_traffic_shift_rto_seconds(namespace: &str, name: &str, direction: &str, seconds: i64) {
+    let labels = TrafficShiftLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        direction: direction.to_string(),
+    };
+    TRAFFIC_SHIFT_RTO_SECONDS
+        .get_or_create(&labels)
+        .set(seconds);
+}
+
 /// Set the Time to Recovery (TTR) for a DR drill
 pub fn set_dr_drill_time_to_recovery(namespace: &str, name: &str, status: &str, ttr_ms: i64) {
     let labels = DRDrillLabels {
@@ -1469,6 +1767,52 @@ pub static OPERATOR_UPTIME_SECONDS: Lazy<Counter<u64, AtomicU64>> = Lazy::new(Co
 
 /// Gauge tracking whether the operator is ready (1 = ready, 0 = not ready).
 pub static OPERATOR_READY_STATUS: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+// ── Job / CronJob Orphan Reclamation Metrics ─────────────────────────────
+
+/// Labels for job/pod orphan reclamation metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct JobOrphanLabels {
+    pub namespace: String,
+    /// `Job` or `Pod`.
+    pub kind: String,
+    /// Stable orphan class, see `controller::job_orphan_reconciler::OrphanClass`.
+    pub class: String,
+}
+
+/// Labels for per-namespace orphan gauges
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct JobOrphanGaugeLabels {
+    pub namespace: String,
+}
+
+/// Counter of Job/CronJob artifacts reclaimed by the orphan reconciler
+pub static JOB_ORPHANS_RECLAIMED_TOTAL: Lazy<Family<JobOrphanLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge of orphan Job pods still awaiting reclamation at the end of a sweep
+pub static JOB_ORPHAN_PODS_OUTSTANDING: Lazy<Family<JobOrphanGaugeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Record `count` reclaimed Job/Pod artifacts for a namespace and orphan class.
+pub fn inc_job_orphan_reclaimed(namespace: &str, kind: &str, class: &str, count: u64) {
+    JOB_ORPHANS_RECLAIMED_TOTAL
+        .get_or_create(&JobOrphanLabels {
+            namespace: namespace.to_string(),
+            kind: kind.to_string(),
+            class: class.to_string(),
+        })
+        .inc_by(count);
+}
+
+/// Set the number of orphan Job pods still pending after a sweep.
+pub fn set_job_orphans_outstanding(namespace: &str, count: i64) {
+    JOB_ORPHAN_PODS_OUTSTANDING
+        .get_or_create(&JobOrphanGaugeLabels {
+            namespace: namespace.to_string(),
+        })
+        .set(count);
+}
 
 // ── Observability Pipeline Metrics ────────────────────────────────────────
 
@@ -1554,6 +1898,23 @@ pub static OBSERVABILITY_PREDICTIVE_ALERTS_TOTAL: Lazy<Counter<u64, AtomicU64>> 
 pub static OBSERVABILITY_BASELINE_SAMPLES: Lazy<
     Family<ObservabilityBaselineLabels, Gauge<i64, AtomicI64>>,
 > = Lazy::new(Family::default);
+
+/// Realized placement savings versus on-demand (#1484).
+pub static COST_SAVINGS_USD: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+pub static COST_SAVINGS_HOURLY_USD: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+pub static SPOT_SAVINGS_USD: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+pub static BEST_EFFORT_SPOT_PLACEMENT_RATIO: Lazy<Gauge<f64, AtomicU64>> =
+    Lazy::new(Gauge::default);
+pub static CRITICAL_ON_SPOT_PODS: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Publish live cost-aware placement metrics for the existing cost dashboard.
+pub fn set_placement_cost_metrics(hourly_usd: f64, spot_ratio: f64, critical_on_spot: u64) {
+    COST_SAVINGS_USD.set(hourly_usd);
+    COST_SAVINGS_HOURLY_USD.set(hourly_usd);
+    SPOT_SAVINGS_USD.set(hourly_usd);
+    BEST_EFFORT_SPOT_PLACEMENT_RATIO.set(spot_ratio);
+    CRITICAL_ON_SPOT_PODS.set(critical_on_spot as i64);
+}
 
 // ── Observability helper functions ────────────────────────────────────────
 
@@ -1955,6 +2316,35 @@ mod tests {
     }
 
     #[test]
+    fn test_job_orphan_reclamation_metrics() {
+        inc_job_orphan_reclaimed("stellar", "Job", "deleted_cron_job", 2);
+        inc_job_orphan_reclaimed("stellar", "Job", "deleted_cron_job", 1);
+        inc_job_orphan_reclaimed("stellar", "Pod", "completed_pod", 4);
+
+        let counter = JOB_ORPHANS_RECLAIMED_TOTAL.get_or_create(&JobOrphanLabels {
+            namespace: "stellar".to_string(),
+            kind: "Job".to_string(),
+            class: "deleted_cron_job".to_string(),
+        });
+        assert_eq!(counter.get(), 3);
+        // A different namespace is tracked independently.
+        inc_job_orphan_reclaimed("other", "Job", "deleted_cron_job", 1);
+        let other = JOB_ORPHANS_RECLAIMED_TOTAL.get_or_create(&JobOrphanLabels {
+            namespace: "other".to_string(),
+            kind: "Job".to_string(),
+            class: "deleted_cron_job".to_string(),
+        });
+        assert_eq!(other.get(), 1);
+
+        set_job_orphans_outstanding("stellar", 3);
+        set_job_orphans_outstanding("stellar", 0);
+        let gauge = JOB_ORPHAN_PODS_OUTSTANDING.get_or_create(&JobOrphanGaugeLabels {
+            namespace: "stellar".to_string(),
+        });
+        assert_eq!(gauge.get(), 0);
+    }
+
+    #[test]
     fn test_inc_operator_reconcile_error() {
         // Test that incrementing operator reconcile error doesn't panic
         inc_operator_reconcile_error("stellarnode", "kube");
@@ -1995,4 +2385,40 @@ mod tests {
         inc_operator_reconcile_error("stellarnode", "unknown");
         // Function should not panic with various error kinds
     }
+}
+
+/// Record the current control-plane degradation level.
+pub fn set_control_plane_degradation_level(level: i64) {
+    CONTROL_PLANE_DEGRADATION_LEVEL.set(level);
+}
+
+/// Record a control-plane component's state (1=healthy, 0=unhealthy, -1=unknown).
+pub fn set_control_plane_component_state(component: &str, state: i64) {
+    let labels = ControlPlaneComponentLabels {
+        component: component.to_string(),
+    };
+    CONTROL_PLANE_COMPONENT_STATE
+        .get_or_create(&labels)
+        .set(state);
+}
+
+/// Count a degradation level transition.
+pub fn inc_control_plane_degradation_transition(from: &str, to: &str) {
+    let labels = DegradationTransitionLabels {
+        from: from.to_string(),
+        to: to.to_string(),
+    };
+    CONTROL_PLANE_DEGRADATION_TRANSITIONS
+        .get_or_create(&labels)
+        .inc();
+}
+
+/// Count an operator action withheld by the degradation gate.
+pub fn inc_control_plane_suppressed_action(action: &str) {
+    let labels = SuppressedActionLabels {
+        action: action.to_string(),
+    };
+    CONTROL_PLANE_SUPPRESSED_ACTIONS
+        .get_or_create(&labels)
+        .inc();
 }

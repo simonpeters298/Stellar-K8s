@@ -102,3 +102,108 @@ fn json_log_output_contains_node_namespace_reconcile_id_fields() {
         "expected JSON log to contain an event message, got: {v}"
     );
 }
+
+// ── Test: error field is emitted as Display, not Debug ─────────────────────────
+
+/// Issue #933: When `error` is logged with `%err` (Display), the JSON value
+/// must be the Display form (no extra quotes or `<ErrorType>` Debug prefix).
+#[test]
+fn json_log_error_field_is_display_not_debug() {
+    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+
+    let make_writer = {
+        let buf = buf.clone();
+        move || SharedBufferWriter { buf: buf.clone() }
+    };
+
+    let fmt_layer = fmt::layer()
+        .json()
+        .flatten_event(true)
+        .with_current_span(false)
+        .with_writer(make_writer);
+
+    let subscriber = tracing_subscriber::registry()
+        .with(EnvFilter::new("info"))
+        .with(fmt_layer);
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // Emit an error event using %err (Display trait).
+    let err_msg = "connection refused";
+    tracing::error!(error = %err_msg, "operation failed");
+
+    let buf_guard = buf.lock().expect("lock poisoned");
+    let output = String::from_utf8_lossy(&buf_guard);
+    let first_line = output
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .expect("expected at least one JSON log line");
+
+    let v: Value = serde_json::from_str(first_line).expect("log line should be valid JSON");
+
+    let error_val = v
+        .get("error")
+        .expect("expected 'error' field in JSON log output");
+
+    // The value must be a plain string (Display), not a debug-wrapped string.
+    assert!(
+        error_val.is_string(),
+        "expected 'error' to be a JSON string, got: {error_val}"
+    );
+    assert_eq!(
+        error_val.as_str().unwrap(),
+        err_msg,
+        "expected 'error' Display value; got: {error_val}"
+    );
+}
+
+// ── Test: duration_ms is serialized as a number, not a string ─────────────────
+
+/// Issue #933: `duration_ms` must be a JSON number so dashboards can aggregate
+/// it directly (e.g. `avg(duration_ms)`).
+#[test]
+fn json_log_duration_ms_is_numeric() {
+    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+
+    let make_writer = {
+        let buf = buf.clone();
+        move || SharedBufferWriter { buf: buf.clone() }
+    };
+
+    let fmt_layer = fmt::layer()
+        .json()
+        .flatten_event(true)
+        .with_current_span(false)
+        .with_writer(make_writer);
+
+    let subscriber = tracing_subscriber::registry()
+        .with(EnvFilter::new("info"))
+        .with(fmt_layer);
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    tracing::info!(duration_ms = 42_u64, "reconcile complete");
+
+    let buf_guard = buf.lock().expect("lock poisoned");
+    let output = String::from_utf8_lossy(&buf_guard);
+    let first_line = output
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .expect("expected at least one JSON log line");
+
+    let v: Value = serde_json::from_str(first_line).expect("log line should be valid JSON");
+
+    let dur_val = v
+        .get("duration_ms")
+        .expect("expected 'duration_ms' field in JSON log output");
+
+    assert!(
+        dur_val.is_number(),
+        "expected 'duration_ms' to be a JSON number (not a string), got: {dur_val}"
+    );
+    assert_eq!(
+        dur_val.as_u64().unwrap(),
+        42,
+        "expected duration_ms == 42, got: {dur_val}"
+    );
+}

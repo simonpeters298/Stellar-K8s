@@ -370,8 +370,8 @@ groups:
 
 ## Next Steps
 
-- [Metrics Guide](docs/metrics/STELLAR_METRICS_GUIDE.md) — Detailed metric documentation
-- [SCP Topology Monitoring](docs/scp-consensus-topology-and-monitoring.md) — Quorum visualization
-- [Byzantine Monitoring](docs/byzantine-monitoring.md) — Network partition detection
-- [Cost Optimization](docs/cost-optimization-guide.md) — Resource tracking
+- [Metrics Guide](metrics/STELLAR_METRICS_GUIDE.md) — Detailed metric documentation
+- [SCP Topology Monitoring](scp-consensus-topology-and-monitoring.md) — Quorum visualization
+- [Byzantine Monitoring](byzantine-monitoring.md) — Network partition detection
+- [Cost Optimization](cost-optimization-guide.md) — Resource tracking
 

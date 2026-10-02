@@ -1,4 +1,4 @@
-// Copyright 2024 Stellar-K8s Contributors
+﻿// Copyright 2024 Stellar-K8s Contributors
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -15,6 +15,8 @@
 //! This module defines the Rust-side types for tenant management CRDs.
 //!
 //! Note: This file is intended to be used by controllers and REST/dashboard.
+
+use std::collections::BTreeMap;
 
 use kube::CustomResource;
 use schemars::JsonSchema;
@@ -56,6 +58,20 @@ pub struct TenantSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<TenantNetworkIsolation>,
 
+    /// Optional node-pool isolation settings.
+    ///
+    /// When set, tenant workloads are pinned to the labelled node pool via
+    /// `nodeSelector`, and scheduled onto tainted nodes via `tolerations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<TenantNodeIsolation>,
+
+    /// Optional per-tenant audit scoping.
+    ///
+    /// When set, the operator wires tenant audit events into the named
+    /// policy and exposes them only to the tenant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit: Option<TenantAuditScope>,
+
     /// Hard quota enforcement for the tenant namespace.
     pub quota: TenantQuotaHard,
 
@@ -87,6 +103,79 @@ pub struct TenantNetworkIsolation {
 
 fn default_tenant_label_key() -> String {
     "tenant.stellar.org/id".to_string()
+}
+
+/// Node-pool isolation settings for a tenant.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantNodeIsolation {
+    /// Label selector for the node pool dedicated to this tenant.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub node_selector: BTreeMap<String, String>,
+
+    /// Tolerations allowing tenant workloads onto tainted nodes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tolerations: Vec<TenantToleration>,
+
+    /// Optional runtime attestation requirement for the node pool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<TenantNodeAttestation>,
+}
+
+/// Toleration for tenant workloads on tainted nodes.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantToleration {
+    pub key: String,
+    pub operator: TenantTolerationOperator,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+    pub effect: TenantTaintEffect,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub enum TenantTolerationOperator {
+    #[default]
+    Equal,
+    Exists,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub enum TenantTaintEffect {
+    #[default]
+    NoSchedule,
+    PreferNoSchedule,
+    NoExecute,
+}
+
+/// Runtime attestation requirement for a tenant's node pool.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantNodeAttestation {
+    /// Attestation provider (e.g. "tpm", "sev-snp", "nitro").
+    pub provider: String,
+    /// Minimum required attestation level, if the provider defines one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_level: Option<u32>,
+}
+
+/// Per-tenant audit scope.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantAuditScope {
+    /// Name of the audit policy or ConfigMap reference used for this tenant.
+    pub policy_ref: String,
+    /// Optional log destination (e.g. a sink identifier).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    /// Whether audit events are visible to the tenant itself.
+    #[serde(default)]
+    pub tenant_visible: bool,
+    /// Retention window in hours; 0 means the cluster default applies.
+    #[serde(default)]
+    pub retention_hours: u32,
 }
 
 /// Billing/usage configuration for a tenant.
@@ -161,8 +250,8 @@ impl TenantSpecCrd {
 
 impl TenantSpec {
     /// Build the namespace labels required for tenant-aware selectors.
-    pub fn namespace_labels(&self) -> std::collections::BTreeMap<String, String> {
-        let mut labels = std::collections::BTreeMap::new();
+    pub fn namespace_labels(&self) -> BTreeMap<String, String> {
+        let mut labels = BTreeMap::new();
         let label_key = self
             .network
             .as_ref()
@@ -232,6 +321,70 @@ impl TenantSpec {
                 "egress": [{ "to": [{ "namespaceSelector": { "matchLabels": { label_key: label_value } } }] }]
             }
         })
+    }
+
+    /// Validate the tenant spec. Returns a human-readable error on the first
+    /// violation found, so callers can surface it in a status condition.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.tenant_id.trim().is_empty() {
+            return Err("tenantId must not be empty".to_string());
+        }
+        if self.namespace.trim().is_empty() {
+            return Err("namespace must not be empty".to_string());
+        }
+
+        if let Some(node) = &self.node {
+            if node.node_selector.is_empty() && node.tolerations.is_empty() {
+                return Err(
+                    "node isolation requires at least one of nodeSelector or tolerations"
+                        .to_string(),
+                );
+            }
+            for tol in &node.tolerations {
+                if tol.key.trim().is_empty() {
+                    return Err("toleration key must not be empty".to_string());
+                }
+                if matches!(tol.operator, TenantTolerationOperator::Equal) && tol.value.is_none() {
+                    return Err(format!(
+                        "toleration for key '{}' uses Equal operator but has no value",
+                        tol.key
+                    ));
+                }
+            }
+            if let Some(att) = &node.attestation {
+                if att.provider.trim().is_empty() {
+                    return Err("node isolation attestation provider must not be empty".to_string());
+                }
+            }
+        }
+
+        if let Some(audit) = &self.audit {
+            if audit.policy_ref.trim().is_empty() {
+                return Err("audit policyRef must not be empty".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Build the pod-template fragment that pins tenant workloads to their
+    /// dedicated node pool. Returns `None` when node isolation is not set.
+    pub fn node_placement_manifest(&self) -> Option<serde_json::Value> {
+        let node = self.node.as_ref()?;
+        let mut out = serde_json::Map::new();
+        if !node.node_selector.is_empty() {
+            out.insert(
+                "nodeSelector".to_string(),
+                serde_json::to_value(&node.node_selector).ok()?,
+            );
+        }
+        if !node.tolerations.is_empty() {
+            out.insert(
+                "tolerations".to_string(),
+                serde_json::to_value(&node.tolerations).ok()?,
+            );
+        }
+        Some(serde_json::Value::Object(out))
     }
 }
 

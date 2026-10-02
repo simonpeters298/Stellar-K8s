@@ -107,7 +107,7 @@ pub enum HookResult {
 
 /// A hook that runs before and/or after each reconcile cycle.
 ///
-/// Both methods have default no-op implementations so implementors only need
+/// Both methods have default no-op implementations so implementers only need
 /// to override the phases they care about.
 #[async_trait]
 pub trait ReconcileHook: Send + Sync + 'static {

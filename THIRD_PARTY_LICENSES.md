@@ -7,6 +7,10 @@ Their names, versions, authors, and license identifiers are listed below.
 > Run `make third-party-licenses` to regenerate after updating `Cargo.toml`.
 > Run `make check-third-party-licenses` to verify this file in CI/local checks.
 
+**Workspace members covered:** `stellar-k8s` (main crate), `security/p2p-firewall`,
+`wasm-plugins`.  Shared transitive dependencies appear once; workspace-member-only
+deps are included where they are not already listed.
+
 | Crate | Version | License | Authors |
 |-------|---------|---------|---------|
 | addr2line | 0.22.0 | Apache-2.0 OR MIT |  |
@@ -375,6 +379,9 @@ Their names, versions, authors, and license identifiers are listed below.
 | prettyplease | 0.2.37 | Apache-2.0 OR MIT | David Tolnay <dtolnay@gmail.com> |
 | primeorder | 0.13.6 | Apache-2.0 OR MIT | RustCrypto Developers |
 | printpdf | 0.7.0 | MIT | Felix Schütt <felix.schuett@maps4print.com>\|Julien Schminke <julien.schminke@web.de |
+| pqcrypto-dilithium | 0.5.0 | MIT | Ruben De Smet <ruben.de.smet@ugent.be>\|The PQClean Project Authors |
+| pqcrypto-kyber | 0.8.1 | MIT | Ruben De Smet <ruben.de.smet@ugent.be>\|The PQClean Project Authors |
+| pqcrypto-traits | 0.3.5 | MIT | Ruben De Smet <ruben.de.smet@ugent.be>\|The PQClean Project Authors |
 | proc-macro2 | 1.0.106 | Apache-2.0 OR MIT | David Tolnay <dtolnay@gmail.com>\|Alex Crichton <alex@alexcrichton.com> |
 | prometheus-client | 0.22.3 | Apache-2.0 OR MIT | Max Inden <mail@max-inden.de> |
 | prometheus-client-derive-encode | 0.4.2 | Apache-2.0 OR MIT | Max Inden <mail@max-inden.de> |
@@ -393,6 +400,7 @@ Their names, versions, authors, and license identifiers are listed below.
 | rand_chacha | 0.9.0 | Apache-2.0 OR MIT | The Rand Project Developers\|The Rust Project Developers\|The CryptoCorrosion Contributors |
 | rand_core | 0.6.4 | Apache-2.0 OR MIT | The Rand Project Developers\|The Rust Project Developers |
 | rand_core | 0.9.5 | Apache-2.0 OR MIT | The Rand Project Developers\|The Rust Project Developers |
+| rand_distr | 0.5.1 | Apache-2.0 OR MIT | The Rand Project Developers\|The Rust Project Developers |
 | rayon | 1.12.0 | Apache-2.0 OR MIT |  |
 | rayon-core | 1.13.0 | Apache-2.0 OR MIT |  |
 | rcgen | 0.13.2 | Apache-2.0 OR MIT |  |
@@ -443,6 +451,7 @@ Their names, versions, authors, and license identifiers are listed below.
 | serde_derive | 1.0.228 | Apache-2.0 OR MIT | Erick Tryzelaar <erick.tryzelaar@gmail.com>\|David Tolnay <dtolnay@gmail.com> |
 | serde_derive_internals | 0.29.1 | Apache-2.0 OR MIT | Erick Tryzelaar <erick.tryzelaar@gmail.com>\|David Tolnay <dtolnay@gmail.com> |
 | serde_json | 1.0.150 | Apache-2.0 OR MIT | Erick Tryzelaar <erick.tryzelaar@gmail.com>\|David Tolnay <dtolnay@gmail.com> |
+| serde_json_diff | 0.2.0 | Apache-2.0 OR MIT | Keats <webbmaster+github@gmail.com> |
 | serde_path_to_error | 0.1.20 | Apache-2.0 OR MIT | David Tolnay <dtolnay@gmail.com> |
 | serde_spanned | 0.6.9 | Apache-2.0 OR MIT |  |
 | serde_urlencoded | 0.7.1 | Apache-2.0 OR MIT | Anthony Ramine <n.oxyde@gmail.com> |

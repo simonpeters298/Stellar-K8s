@@ -190,6 +190,10 @@ pub fn build_router(state: Arc<ControllerState>) -> Router {
         // Dashboard routes
         .route("/", get(dashboard_ui))
         .route(
+            "/api/v1/validators/leaderboard",
+            get(dashboard_handlers::get_validator_leaderboard),
+        )
+        .route(
             "/api/v1/dashboard/overview",
             get(dashboard_handlers::dashboard_overview),
         )
@@ -324,8 +328,6 @@ pub fn build_router(state: Arc<ControllerState>) -> Router {
         app = app.route("/metrics", get(metrics_handler));
     }
 
-    // Correlation ID is outermost so every handler and log sees it.
-    let app = app.layer(middleware::from_fn(crate::middleware::correlation_middleware));
     // Extension is outermost so version middleware can extract VersionPolicy.
     app.layer(middleware::from_fn(versioning::inject_api_version_headers))
         .layer(Extension(policy))

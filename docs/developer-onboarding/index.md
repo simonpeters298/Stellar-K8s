@@ -44,7 +44,7 @@ For the full command checklist and rationale, see
 1. Clone the repo.
 2. Run `make build`.
 3. Start a local Kubernetes cluster with `kind create cluster`.
-4. Deploy the operator using `make deploy` or `helm install`.
+4. Deploy the operator using `make quickstart-deploy` or `helm install`.
 5. Apply an example `StellarNode` manifest from `examples/`.
 
 ### Tutorial 2: Add a New Feature

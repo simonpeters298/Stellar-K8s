@@ -13,6 +13,10 @@
 mod common;
 
 use common::skip_if_tools_missing;
+// Issue #934: import RAII teardown guards from common so new tests can use
+// TestHarnessGuard (cluster + resources) instead of ad-hoc local Drop impls.
+#[allow(unused_imports)]
+use common::{KindClusterGuard, TestHarnessGuard, TempFileGuard};
 use std::collections::HashMap;
 use std::error::Error;
 use std::process::{Command, Stdio};
@@ -391,6 +395,11 @@ spec:
 }
 
 /// RAII cleanup guard for the e2e reconciliation test.
+/// Local teardown guard for `e2e_stellarnode_reconciliation`.
+///
+/// **New tests** should use [`common::TestHarnessGuard`] instead — it handles
+/// cluster-level teardown as well as resource cleanup and is shared across all
+/// E2E test files (issue #934).
 struct E2eCleanup {
     operator_manifest: String,
     node_name: &'static str,

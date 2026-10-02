@@ -207,7 +207,7 @@ fn validate_resource_limits(node: &StellarNode, errors: &mut Vec<OrgValidationEr
 
 /// In production mode, ensure resource *requests* meet per-node-type minimums.
 ///
-/// Non-production nodes (Testnet/Futurenet/Custom) are exempt. Unparseable
+/// Non-production nodes (Testnet/Futurenet/Custom) are exempt. Unparsable
 /// quantities are skipped here — `validate_resource_presence` already rejects
 /// empty/zero values, and the Kubernetes API server rejects malformed ones.
 fn validate_minimum_resources(node: &StellarNode, errors: &mut Vec<OrgValidationError>) {

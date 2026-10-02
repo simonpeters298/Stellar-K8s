@@ -18,6 +18,7 @@ config/
 │   ├── stellarbenchmark-crd.yaml
 │   ├── stellaraiops-crd.yaml
 │   ├── stellarbenchmarkreport-crd.yaml
+│   ├── maintenanceplan-crd.yaml
 ├── samples/          # Example resources for testing and reference
 ├── manifests/        # OLM ClusterServiceVersion bases and Gatekeeper policies
 │   ├── bases/        # CSV base for operator-sdk bundle generation

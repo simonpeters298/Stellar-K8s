@@ -137,6 +137,82 @@
       }
     },
     {
+      "title": "Realized Cost Savings",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        {
+          "expr": "stellar_cost_savings_usd",
+          "legendFormat": "Realized Savings",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 50 },
+              { "color": "green", "value": 200 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Hourly Realized Savings",
+      "type": "timeseries",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        {
+          "expr": "stellar_cost_savings_hourly_usd",
+          "legendFormat": "Hourly Realized",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 40
+          }
+        }
+      }
+    },
+    {
+      "title": "Best-Effort Spot Placement",
+      "type": "gauge",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        {
+          "expr": "stellar_best_effort_spot_placement_ratio * 100",
+          "legendFormat": "Spot %",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "green", "value": 85 }
+            ]
+          }
+        }
+      }
+    },
+    {
       "title": "Spot Instance Savings",
       "type": "bargauge",
       "datasource": "Prometheus",
@@ -157,6 +233,30 @@
               { "color": "red", "value": null },
               { "color": "yellow", "value": 100 },
               { "color": "green", "value": 500 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Critical Pods On Spot",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 4 },
+      "targets": [
+        {
+          "expr": "stellar_critical_on_spot_pods",
+          "legendFormat": "Critical on Spot",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
             ]
           }
         }

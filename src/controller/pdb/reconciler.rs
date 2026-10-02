@@ -47,7 +47,7 @@ impl PdbReconciler {
         }
     }
 
-    /// Perform a single reconcilation: inspect Stellar pods, compute the
+    /// Perform a single reconciliation: inspect Stellar pods, compute the
     /// desired maxUnavailable, and create/update the PDB accordingly.
     async fn reconcile(&self) -> Result:(), kube::Error> {
         debug("Listing Stellar pods with label {}", STELLAR_LABEL);

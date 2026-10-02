@@ -59,6 +59,18 @@ else
   echo "warn: PyYAML not available, skipping manifest validation"
 fi
 
+step "Golden-path observability contract schema is published"
+if [[ -f "${REPO_ROOT}/schemas/observability/resource-attributes.v1.json" ]]; then
+  if python3 -c "import json,sys; spec=json.load(open(sys.argv[1])); assert spec['contractVersion']; assert 'k8s.pod.name' in spec['required']" \
+    "${REPO_ROOT}/schemas/observability/resource-attributes.v1.json"; then
+    echo "ok: observability resource-attribute contract"
+  else
+    fail "observability contract schema is invalid"
+  fi
+else
+  fail "missing schemas/observability/resource-attributes.v1.json"
+fi
+
 step "README documents the quickstart"
 if grep -qiE "quick ?start" "${REPO_ROOT}/README.md"; then
   echo "ok: README contains a quickstart section"

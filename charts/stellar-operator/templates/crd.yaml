@@ -368,6 +368,18 @@ spec:
                 observedGeneration:
                   type: integer
                   format: int64
+                observedPassphraseSecretVersion:
+                  type: string
+                  description: Resource version of the passphrase Secret last applied to the pods.
+                  nullable: true
+                observedSeedSecretVersion:
+                  type: string
+                  description: Resource version of the validator seed Secret last applied to the pods.
+                  nullable: true
+                lastSecretRotationTime:
+                  type: string
+                  description: RFC3339 timestamp of the last observed passphrase or seed secret rotation.
+                  nullable: true
                 canaryVersion:
                   type: string
                 canaryReadyReplicas:

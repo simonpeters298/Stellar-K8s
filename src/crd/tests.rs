@@ -1041,6 +1041,7 @@ mod stellar_node_spec_validation {
                 http_port: None,
                 log_level: Some("info".to_string()),
                 additional_config: None,
+                ..Default::default()
             });
         }
 
@@ -1065,6 +1066,7 @@ mod stellar_node_spec_validation {
                 http_port: Some(11701),
                 log_level: Some("debug".to_string()),
                 additional_config: Some("MAX_CONCURRENT_SUBPROCESSES=5".to_string()),
+                ..Default::default()
             });
         }
 
@@ -1091,6 +1093,7 @@ mod stellar_node_spec_validation {
                 http_port: None,
                 log_level: None,
                 additional_config: None,
+                ..Default::default()
             });
         }
 
@@ -1355,6 +1358,7 @@ mod stellar_node_spec_validation {
                 http_port: Some(11626),
                 log_level: Some("info".to_string()),
                 additional_config: Some("# Custom config\nFOO=bar".to_string()),
+                ..Default::default()
             }),
             enable_preflight: true,
             max_events_per_request: 10000,

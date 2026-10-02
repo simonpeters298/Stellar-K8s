@@ -189,6 +189,7 @@ pub fn build_snapshot_push_job(
             "set -e; \
              echo 'Packaging ledger snapshot...'; \
              tar -czf {SCRATCH_MOUNT_PATH}/snapshot.tar.gz -C {DATA_MOUNT_PATH} .; \
+             echo 'Snapshot SHA256:'; sha256sum {SCRATCH_MOUNT_PATH}/snapshot.tar.gz; \
              echo 'Pushing to OCI registry: {image_ref}'; \
              crane push {SCRATCH_MOUNT_PATH}/snapshot.tar.gz {image_ref}; \
              echo 'Push complete.'"

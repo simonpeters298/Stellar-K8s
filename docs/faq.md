@@ -7,6 +7,7 @@ Welcome to the Stellar-K8s FAQ! This document addresses common questions and iss
 - [Performance & Scaling](#performance--scaling-questions) (Storage, Disk Management, Resource Usage)
 - [Troubleshooting](#troubleshooting-questions) (Health Checks, Peer Discovery, Networking)
 - [General Operations](#general-operations-questions) (Deployment, Updates, Monitoring)
+- [Deployment FAQ](#deployment-faq) (First Validator, Testnet Onboarding)
 
 ---
 
@@ -393,6 +394,29 @@ kubectl exec -n stellar-system <horizon-pod> -- \
 
 A node transitions to `Ready` when the health endpoint confirms full sync. See [Health Checks](./health-checks.md).
 
+### Q: What does "Joining SCP" mean, and when is it a problem?
+
+**A:** `Joining SCP` is a transitional Stellar Core state meaning the node is up and has connected to peers, and is now exchanging SCP messages to join consensus for the first time — the handshake layer works, consensus participation hasn't started yet. It is the expected state for a freshly deployed validator and normally lasts a **few minutes**; the node then advances to `Synced!` (or first to `Catching up` on a fresh volume). Note that it is distinct from `Catching up` (replaying ledger history — can legitimately take hours) and from `Syncing` (see [the previous question](#q-what-does-it-mean-when-a-node-is-in-syncing-phase)).
+
+**What to check:** query the state field from the Core admin API:
+
+```bash
+# .info.state is the field to inspect (returns "Joining SCP", "Synced!", ...)
+kubectl exec -n <namespace> <validator-pod> -- curl -s http://localhost:11626/info | jq -r '.info.state'
+
+# Connected peer count — the key discriminator, see below
+kubectl exec -n <namespace> <validator-pod> -- curl -s http://localhost:11626/peers | jq '.authenticated_peers | length'
+```
+
+**When it's normal:**
+
+- Fresh deployment; peers connected (`/peers` count > 0); state advances to `Synced!` within minutes.
+- First boot after volume recreation or a catch-up restart.
+
+**When it indicates a connectivity problem:** the pod runs, `/info` keeps returning `Joining SCP`, and the peer count stays at **0**. The operator's own alerting encodes this threshold — `StellarCoreNoPeers` fires critical at 5 minutes of zero peers ([alert rules](https://github.com/OtowoOrg/Stellar-K8s/blob/main/monitoring/stellar-core-metrics.yaml)). With zero peers the node can never see a quorum, so it will sit in `Joining SCP` indefinitely. The usual cause is blocked **outbound** access to peer ports (commonly missed in firewalls, NAT gateways, and cloud security groups). Work through the [Networking Troubleshooting Guide](./troubleshooting/networking.md) — start with §6.1 "Required outbound connections from validators" and the P2P firewalling checks — then the [Network Configuration Guide](./networking/index.md) for egress hardening, and the [Peer Discovery FAQ](#q-how-does-peer-discovery-work-in-stellar-k8s) if the peer list itself is empty.
+
+While stuck, the [readiness probe](./operations/readiness-probe-states.md) keeps the pod **Not Ready** (`Joining SCP` is not a ready state), so the node is also removed from Service endpoints.
+
 ### Q: What should I do if I see "Connection Refused" errors?
 
 **A:** This means a connection was rejected at the target port. Troubleshoot in order:
@@ -603,12 +627,59 @@ See [Archive Pruning](./archive-pruning.md) and [Proactive Disk Scaling](./proac
 
 ---
 
+## Deployment FAQ
+
+### Q: How do I deploy my first validator on the public testnet? (Testnet onboarding start to finish)
+
+**A:** Testnet is the right place to start: it uses the same operator workflow as Mainnet, but the ledger is small (~5M ledgers vs 50M+), sync is fast (2–6 hours on modest hardware), and mistakes cost nothing. Here is the complete path from zero to a synced testnet validator:
+
+**1. Prerequisites and operator installation.** Work through the [Getting Started](./getting-started/index.md) track: [Prerequisites](./getting-started/prerequisites.md) → [Installation](./getting-started/installation.md) → [Quick Start](./getting-started/quick-start.md). You need a Kubernetes 1.28+ cluster, kubectl, and Helm 3.x.
+
+**2. Create the seed secret.** Generate a keypair and store the secret seed in Kubernetes (never commit seeds or put them in the manifest):
+
+```bash
+docker run --rm stellar/stellar-core:latest stellar-core gen-seed
+kubectl create secret generic validator-seed-testnet \
+  --from-literal=seed='SBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX' \
+  -n stellar
+```
+
+For KMS/Vault-backed seed handling and rotation, see [Secrets Management](./secret-management-kms.md).
+
+**3. Apply the example manifest.** Use [`examples/validator-testnet.yaml`](../examples/validator-testnet.yaml) as-is for your first boot — it is the canonical source for Testnet defaults (`network: testnet` selects the SDF Test Network passphrase and default history archives, with balanced 500m/1Gi requests and 100Gi storage):
+
+```bash
+kubectl apply -f examples/validator-testnet.yaml
+kubectl get stellarnodes -n stellar
+```
+
+**4. First boot.** The pod starts, opens outbound peer connections, and progresses through the readiness states (`Booting` → `Joining SCP` → `Synced!`). Watch it:
+
+```bash
+kubectl logs -n stellar -f $(kubectl get pods -n stellar -o name | head -1)
+kubectl exec -n stellar <validator-pod> -- curl -s http://localhost:11626/info
+```
+
+`Joining SCP` for a while is normal; what you want to see next is `Synced!`. The state machine behind the readiness probe is documented in [Readiness Probe States](./operations/readiness-probe-states.md).
+
+**5. Verify sync.** A synced validator reports `Synced!` from the `/info` endpoint and is added back to the Service endpoints by the operator.
+
+**Where to go next:**
+
+- Step-by-step walkthrough with screenshots of each check: [Deploy a Testnet Validator](./tutorials/deploy-testnet-validator.md)
+- Full deployment guide (quorum sets, archives, production options): [Validator Deployment Guide](./deployment-guides/validator.md)
+- Two facts to keep straight from day one: network passphrases and seeds. The **passphrase is derived from your manifest's `network:` field — don't hardcode it** (`testnet` → `Test SDF Network ; September 2015`, `mainnet` → `Public Global Stellar Network ; September 2015`); see [Network Isolation](./network-isolation.md) for why cross-network mixing is dangerous. **Seeds are always referenced via `validatorConfig.seedSecretRef`** pointing at a Kubernetes Secret, as in step 2 above — the [API reference for `seedSecretRef`](./api-reference.md) covers the field's exact behavior.
+- Testnet firewall notes (outbound peer ports) live in the [Network Configuration Guide](./networking/index.md)
+
+---
+
 ## Related Documentation
 
 - [Getting Started Guide](./getting-started/quick-start.md)
 - [API Reference](./api-reference.md)
 - [mTLS Setup and Certificate Rotation](./mtls-guide.md)
 - [Network Isolation Guide](./network-isolation.md)
+- [Pod-to-Pod Network Segmentation](./network-pod-to-pod.md)
 - [Health Checks Documentation](./health-checks.md)
 - [Dynamic Peer Discovery](./peer-discovery.md)
 - [Proactive Disk Scaling](./proactive-disk-scaling.md)

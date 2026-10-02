@@ -42,8 +42,8 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use std::hint::black_box;
 
 use stellar_k8s::crd::{
-    AutoscalingConfig, HistoryMode, HorizonConfig, NodeType, ResourceRequirements,
-    StellarNetwork, StellarNodeSpec, StorageConfig, ValidatorConfig,
+    AutoscalingConfig, HistoryMode, HorizonConfig, NodeType, ResourceRequirements, StellarNetwork,
+    StellarNodeSpec, StorageConfig, ValidatorConfig,
 };
 
 /// The smallest `StellarNodeSpec` that passes validation: a Validator with

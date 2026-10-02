@@ -105,14 +105,16 @@ make check-license-headers     # License header enforcement
 
 ```bash
 # Run security audit
-cargo deny check
-cargo audit
+make audit
 
 # Check for outdated dependencies
-cargo outdated
+make security-scan
 
 # Run secret scanning
 ./scripts/check-secrets.sh
+
+# Generate security report
+make security-report
 ```
 
 ### Manual Security Reviews
@@ -161,7 +163,6 @@ securityContext:
 
 ### Documentation
 
-- [Dependency Security Audit](./DEPENDENCY_SECURITY_AUDIT.md)
 - [Secret Scanning Script](./scripts/check-secrets.sh)
 - [Deny Configuration](./deny.toml)
 

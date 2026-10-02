@@ -38,9 +38,6 @@ on:
       - "Cargo.lock"
       - "README.md"
       - "scripts/quickstart-verify.sh"
-  schedule:
-    # Weekly Sunday at 06:00 UTC — catches environmental drift
-    - cron: "0 6 * * 0"
   workflow_dispatch:
     inputs:
       skip_cleanup:
@@ -65,7 +62,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ── Rust toolchain ───────────────────────────────────────────────────
       - name: Setup Rust
@@ -75,13 +72,13 @@ jobs:
 
       # ── Tool installs ────────────────────────────────────────────────────
       - name: Install kind
-        uses: helm/kind-action@v1.10.0
+        uses: helm/kind-action@v1.14.0
         with:
           install_only: true
           version: "v0.23.0"
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@v5
         with:
           version: "v3.16.0"
 
@@ -128,7 +125,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck

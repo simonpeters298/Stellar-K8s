@@ -44,6 +44,27 @@ spec:
           annotations:
             summary: 'Stellar node {{ `{{ $labels.node_name }}` }} ledger close time is high'
             description: 'Ledger close time is {{ `{{ $value }}` }}s, above the {{ .Values.monitoring.prometheusRule.ledgerCloseTimeThresholdSeconds }}s threshold.'
+        - alert: StellarFeeMarketSpike
+          expr: stellar_fee_market_p95_stroops > stellar_fee_market_spike_threshold_stroops
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Stellar {{ `{{ $labels.fee_type }}` }} fees exceed the configured threshold'
+            description: 'P95 fee on {{ `{{ $labels.network }}` }} is {{ `{{ $value }}` }} stroops; review fee strategy and Soroban resource limits.'
+        - alert: StellarAssetLargeSupplyChange
+          expr: increase(stellar_asset_large_supply_changes_total[5m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Large supply change for {{ `{{ $labels.asset_code }}` }}'
+            description: 'Watched asset {{ `{{ $labels.asset_code }}` }} on {{ `{{ $labels.network }}` }} exceeded its configured supply-change threshold.'
+        - alert: StellarAssetClawback
+          expr: increase(stellar_asset_clawback_events_total[5m]) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Clawback observed for {{ `{{ $labels.asset_code }}` }}'
+            description: 'A clawback ledger change was observed for watched asset {{ `{{ $labels.asset_code }}` }}.'
         {{- with .Values.monitoring.prometheusRule.additionalRules }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -63,6 +84,33 @@ spec:
   groups:
     - name: certificate-expiry
       rules:
+        - alert: WebhookCertificateExpiring25Percent
+          expr: stellar_webhook_certificate_remaining_ratio > 0 and stellar_webhook_certificate_remaining_ratio <= 0.25
+          for: 1m
+          labels:
+            severity: warning
+            component: admission-webhook
+          annotations:
+            summary: "Admission webhook certificate has 25% or less lifetime remaining"
+            description: "The cert-health sidecar is validating rotation and trust-bundle propagation; investigate if the alert persists."
+        - alert: WebhookCertificateExpiring10Percent
+          expr: stellar_webhook_certificate_remaining_ratio > 0 and stellar_webhook_certificate_remaining_ratio <= 0.10
+          for: 1m
+          labels:
+            severity: critical
+            component: admission-webhook
+          annotations:
+            summary: "Admission webhook certificate has 10% or less lifetime remaining"
+            description: "Renewal is approaching expiry. Check cert-manager and cainjector immediately."
+        - alert: WebhookCertificateVerificationFailed
+          expr: stellar_webhook_certificate_valid == 0
+          for: 30s
+          labels:
+            severity: critical
+            component: admission-webhook
+          annotations:
+            summary: "Admission webhook serving certificate failed verification"
+            description: "The pod is failing readiness closed until certificate, key, CA, validity, and DNS identity agree."
         - alert: CertificateExpiringSoon
           expr: (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < {{ .Values.monitoring.prometheusRule.certAlerts.warningDays | default 30 }}
           for: 1h

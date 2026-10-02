@@ -179,7 +179,7 @@ NoRaceConditions ==
 ```rust
 // BAD: Both paths could execute concurrently
 if deletion_requested {
-    cleanup_stellar_node().await?;  // Deleteing resources
+    cleanup_stellar_node().await?;  // Deleting resources
 }
 if spec_changed {
     apply_stellar_node().await?;    // Creating resources with new spec

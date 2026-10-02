@@ -14,6 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::scheduler::savings::SavingsAggregator;
+
 use super::allocation::CostAllocation;
 use super::anomaly::CostAnomaly;
 use super::forecast::CostForecast;
@@ -47,6 +49,25 @@ impl CostDashboard {
         recommendations: &[OptimizationRecommendation],
         forecasts: &[CostForecast],
     ) -> Self {
+        Self::build_with_realized(
+            allocation,
+            anomalies,
+            recommendations,
+            forecasts,
+            &SavingsAggregator::new(),
+            0.0,
+        )
+    }
+
+    /// Attach first-class realized savings from the placement aggregator.
+    pub fn build_with_realized(
+        allocation: &CostAllocation,
+        anomalies: &[CostAnomaly],
+        recommendations: &[OptimizationRecommendation],
+        forecasts: &[CostForecast],
+        realized: &SavingsAggregator,
+        spot_ratio: f64,
+    ) -> Self {
         let total = allocation.total();
         let savings: f64 = recommendations
             .iter()
@@ -76,7 +97,7 @@ impl CostDashboard {
             .map(|r| r.description.clone())
             .collect();
 
-        let prometheus_metrics = format!(
+        let mut prometheus_metrics = format!(
             "# TYPE stellar_cost_total_monthly_usd gauge\n\
              stellar_cost_total_monthly_usd {:.2}\n\
              # TYPE stellar_cost_potential_savings_usd gauge\n\
@@ -87,6 +108,7 @@ impl CostDashboard {
             savings,
             anomalies.len(),
         );
+        prometheus_metrics.push_str(&realized.prometheus_metrics(spot_ratio));
 
         Self {
             total_monthly_cost_usd: total,
@@ -102,5 +124,39 @@ impl CostDashboard {
             forecast_30d_usd: forecast_30d,
             prometheus_metrics,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cost_optimization::allocation::CostAllocation;
+    use crate::scheduler::capacity::{best_effort_workload, defined_test_cluster, place_workloads};
+    use crate::scheduler::savings::{COST_SAVINGS_METRIC, HOURLY_SAVINGS_METRIC};
+    use chrono::Utc;
+
+    #[test]
+    fn dashboard_includes_hourly_realized_savings() {
+        let nodes = defined_test_cluster();
+        let workloads: Vec<_> = (0..10)
+            .map(|i| best_effort_workload(&format!("be-{i}")))
+            .collect();
+        let report = place_workloads(&workloads, &nodes, &[]);
+        let mut agg = SavingsAggregator::new();
+        agg.record_placement(Utc::now(), &report);
+        let dash = CostDashboard::build_with_realized(
+            &CostAllocation::default(),
+            &[],
+            &[],
+            &[],
+            &agg,
+            report.best_effort_spot_ratio(),
+        );
+        assert!(dash.prometheus_metrics.contains(COST_SAVINGS_METRIC));
+        assert!(dash.prometheus_metrics.contains(HOURLY_SAVINGS_METRIC));
+        assert!(dash
+            .prometheus_metrics
+            .contains("stellar_best_effort_spot_placement_ratio"));
+        assert!(agg.latest_hourly_usd() > 0.0);
     }
 }

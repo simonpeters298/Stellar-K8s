@@ -25,9 +25,6 @@ use k8s_openapi::api::networking::v1::{
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
-use k8s_openapi::api::networking::v1::{NetworkPolicy, NetworkPolicyIngressRule, NetworkPolicyPeer, NetworkPolicySpec};
-use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, LabelSelector};
 use kube::api::{Patch, PatchParams, PostParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
@@ -112,17 +109,6 @@ async fn create_or_update_namespace(tenant_spec: &TenantSpec, client: &Client) -
             info!(namespace = %tenant_spec.namespace, "Updated existing namespace");
         }
         None => {
-            ns_api
-                .create(&PostParams::default(), &namespace)
-                .await?;
-            ns_api.patch(
-                &tenant_spec.namespace,
-                &PatchParams::apply("stellar-operator"),
-                &Patch::Apply(&label_patch),
-            ).await?;
-            info!(namespace = %tenant_spec.namespace, "Updated existing namespace");
-        }
-        None => {
             ns_api.create(&PostParams::default(), &namespace).await?;
             info!(namespace = %tenant_spec.namespace, "Created namespace");
         }
@@ -152,7 +138,10 @@ async fn apply_resource_quota(tenant_spec: &TenantSpec, client: &Client) -> Resu
 
     // Set pod count limit
     hard.insert("pods".to_string(), Quantity("1000".to_string()));
-    hard.insert("requests.storage".to_string(), Quantity("100Gi".to_string()));
+    hard.insert(
+        "requests.storage".to_string(),
+        Quantity("100Gi".to_string()),
+    );
 
     let quota = ResourceQuota {
         metadata: ObjectMeta {
@@ -172,13 +161,6 @@ async fn apply_resource_quota(tenant_spec: &TenantSpec, client: &Client) -> Resu
             quota_api
                 .replace(&quota_name, &PostParams::default(), &quota)
                 .await?;
-            info!(quota = %quota_name, namespace = %tenant_spec.namespace, "Updated ResourceQuota");
-        }
-        None => {
-            quota_api
-                .create(&PostParams::default(), &quota)
-                .await?;
-            quota_api.replace(&quota_name, &PostParams::default(), &quota).await?;
             info!(quota = %quota_name, namespace = %tenant_spec.namespace, "Updated ResourceQuota");
         }
         None => {
@@ -213,7 +195,7 @@ async fn apply_network_policies(tenant_spec: &TenantSpec, client: &Client) -> Re
     };
 
     // Deny egress to other tenants, allow to same tenant and external APIs.
-    // TODO(tenant-egress): scope egress to same-tenant + external APIs instead of
+    // TODO(exempt: tenant-egress): scope egress to same-tenant + external APIs instead of
     // the fully restrictive empty rule set below.
 
     let policy = NetworkPolicy {
@@ -228,7 +210,6 @@ async fn apply_network_policies(tenant_spec: &TenantSpec, client: &Client) -> Re
             egress: Some(vec![]), // Restrictive: no external traffic by default
             pod_selector: Default::default(),
         }),
-        ..Default::default()
     };
 
     let policy_name = format!("{}-isolation", tenant_id);
@@ -238,13 +219,6 @@ async fn apply_network_policies(tenant_spec: &TenantSpec, client: &Client) -> Re
             policy_api
                 .replace(&policy_name, &PostParams::default(), &policy)
                 .await?;
-            info!(policy = %policy_name, namespace = %tenant_spec.namespace, "Updated NetworkPolicy");
-        }
-        None => {
-            policy_api
-                .create(&PostParams::default(), &policy)
-                .await?;
-            policy_api.replace(&policy_name, &PostParams::default(), &policy).await?;
             info!(policy = %policy_name, namespace = %tenant_spec.namespace, "Updated NetworkPolicy");
         }
         None => {
@@ -258,7 +232,7 @@ async fn apply_network_policies(tenant_spec: &TenantSpec, client: &Client) -> Re
 
 /// Set up RBAC: create tenant-scoped role and rolebinding
 async fn setup_rbac(tenant_spec: &TenantSpec, client: &Client) -> Result<()> {
-    // TODO(tenant-rbac): Implement role and rolebinding creation per tenant
+    // TODO(exempt: tenant-rbac): Implement role and rolebinding creation per tenant
     // This will:
     // 1. Create a Role scoped to tenant resources
     // 2. Create a RoleBinding for tenant service accounts

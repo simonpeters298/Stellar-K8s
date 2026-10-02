@@ -37,6 +37,7 @@ schemars = { version = "0.8", features = ["chrono"] }
 thiserror = "1"
 anyhow = "1"
 
+anyhow = "1.0.104" # Pinned to Cargo.lock (1.0.104); 1.0.108 was unpublished
 # CLI argument parsing
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
@@ -73,10 +74,10 @@ opentelemetry-otlp = { version = "0.14", features = [
 ] }
 
 # HTTP client for health checks
-reqwest = { version = "0.12", features = [
+reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls-manual-roots",
-    "native-tls",
+    
     "multipart",
 ] }
 
@@ -102,6 +103,13 @@ rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 axum-server = { version = "0.7.0", features = ["tls-rustls"] }
 rustls-pki-types = "1.14.0"
 x509-parser = "0.16"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
+axum-server = { version = "0.7.0", features = ["tls-rustls"] }
+rustls-pki-types = "1.14.1"
+# `verify` enables the cryptographic chain check used by the webhook
+# certificate-health verifier (src/webhook/cert_health.rs).
+x509-parser = { version = "0.16", features = ["verify"] }
 
 # Bounded Soroban RPC cache primitives and Wasm guest
 stellar-wasm-cache = { path = "wasm-plugins" }
@@ -133,6 +141,8 @@ rand_distr = "0.5.1"
 # Backup scheduler dependencies
 cron = "0.15"
 flate2 = "1"
+# Used unconditionally by backup-verify's restore integrity check, not just tests
+tempfile = "3"
 async-trait = "0.1"
 sqlx = { version = "0.8.6", default-features = false, features = [
     "runtime-tokio",
@@ -186,7 +196,6 @@ k8s-v1-30 = ["k8s-openapi/v1_30"]
 
 [dev-dependencies]
 tokio-test = "0.4"
-tempfile = "3"
 wiremock = "=0.6.5"
 proptest = "1.5"
 wat = "1.246"
@@ -196,6 +205,14 @@ k8s-openapi = { version = "0.22", default-features = false, features = ["v1_30"]
 [[bin]]
 name = "stellar-operator"
 path = "src/main.rs"
+
+[[bin]]
+name = "check-unreachable-modules"
+path = "src/bin/check_unreachable_modules.rs"
+
+[[bin]]
+name = "check-pipeline-log-redaction"
+path = "src/bin/check_pipeline_log_redaction.rs"
 
 [[bin]]
 name = "stellar-sidecar"
@@ -212,6 +229,24 @@ path = "src/bin/completions.rs"
 [[bin]]
 name = "soroban-cache-proxy"
 path = "src/bin/soroban-cache-proxy.rs"
+name = "conventional-commit-check"
+path = "src/bin/conventional-commit-check.rs"
+
+[[bin]]
+name = "backup-verify"
+path = "src/bin/backup-verify.rs"
+
+# Lifecycle hooks runner — installed into workload pods to run ordered
+# setup / readiness / teardown hooks (#1525).
+[[bin]]
+name = "stellar-hooks"
+path = "src/bin/stellar-hooks.rs"
+
+# Cross-platform developer bootstrap verifier — pure Rust so it also runs on
+# plain Windows (no WSL/Git Bash needed), unlike scripts/preflight.sh.
+[[bin]]
+name = "stellar-bootstrap-verify"
+path = "src/bin/stellar-bootstrap-verify.rs"
 
 # Byzantine Monitoring Watcher — deployed as a sidecar in multiple cloud regions
 # to detect local vs. global consensus issues (Byzantine partition detection).
@@ -227,5 +262,23 @@ name = "stellar-fork-detector"
 path = "src/bin/stellar-fork-detector.rs"
 required-features = ["rest-api", "metrics"]
 
+# Health Check Sidecar — provides advanced liveness/readiness probes
+# that query Stellar Core API instead of just checking process status
+[[bin]]
+name = "stellar-health-sidecar"
+path = "src/bin/stellar-health-sidecar.rs"
+required-features = ["rest-api"]
+
+# Admission webhook certificate-health sidecar. It performs local, offline
+# chain/identity/validity checks and gates pod readiness fail-closed.
+[[bin]]
+name = "stellar-cert-health"
+path = "src/bin/stellar-cert-health.rs"
+required-features = ["admission-webhook"]
+
+[[bench]]
+name = "crd_operations"
+harness = false
+
 [workspace]
-members = ["wasm-plugins"]
+members = ["wasm-plugins", "security/p2p-firewall"]

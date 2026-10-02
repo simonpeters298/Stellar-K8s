@@ -128,7 +128,7 @@ impl VulnerabilitySeverity {
 }
 
 /// Count of vulnerabilities by severity
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CVECount {
     pub critical: u32,
     pub high: u32,

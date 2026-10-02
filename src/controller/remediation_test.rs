@@ -519,7 +519,7 @@ mod tests {
         let node = make_node(ann);
         assert!(
             can_remediate(&node),
-            "unparseable remediation time should be treated as no previous remediation"
+            "unparsable remediation time should be treated as no previous remediation"
         );
     }
 

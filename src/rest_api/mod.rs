@@ -79,9 +79,9 @@ pub mod metrics_store;
 mod oidc;
 mod profiling;
 mod resource_optimization_handlers;
-mod scp_topology;
 #[cfg(feature = "rest-api")]
 pub mod schema_validation;
+mod scp_topology;
 mod server;
 pub mod stellar_metrics_server;
 mod versioning;

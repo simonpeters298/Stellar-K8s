@@ -98,7 +98,13 @@ cd Stellar-K8s
 
 ### 2. Run Development Setup
 
-Install the manually-installed tools listed in [Prerequisites](#prerequisites) above, then run:
+Install the manually-installed tools listed in [Prerequisites](#prerequisites) above. On Linux or macOS you can automate this step with:
+
+```bash
+./scripts/setup-dev-env.sh
+```
+
+This detects your OS and runs the matching `scripts/setup-linux.sh` or `scripts/setup-mac.sh`. Then run:
 
 ```bash
 make dev-setup
@@ -455,9 +461,10 @@ make clean         # Remove build artifacts
 ```bash
 make preflight     # Validate all required tools are installed (run this first)
 make health        # Recommended: format + lint + tests + docs (+ shellcheck)
+make health-fast   # Fast gate: format + lint + compile (no tests) — same as `make validate`
 make quick         # Fast pre-commit check (format + compile)
-make health-fast  # Fast compile path: format + lint + compile check (no tests)
-make ci-local      # Full CI pipeline locally (fmt-check + lint + audit + test + build + link-check)
+make validate      # Alias for health-fast: format + lint + compile check (no tests)
+make ci-local      # Full CI pipeline locally (fmt-check + lint + docs-lint + audit + test + build + link-check)
 ```
 
 ### Security

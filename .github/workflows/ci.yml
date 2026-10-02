@@ -25,7 +25,8 @@ env:
 #                                          ├── security-audit ────────────────┐ │
 #                                          ├── helm-lint (helm changes only)   │ │
 #                                          ├── examples-smoke-test (examples) │ │
-#                                          └── api-docs (api_docs changes)     │ │
+#                                          ├── api-docs (api_docs changes)     │ │
+#                                          └── issue-template-lint (.github/ISSUE_TEMPLATE) │
 #                                                                             ▼ ▼
 # changes ──┬── lint ──────────────────────────────────────────────────────────┐
 #           ├── security-audit ──────────────────────────────────────────────┐ │
@@ -40,7 +41,8 @@ env:
 #                                                                      │
 #                                                                    docker (main only)
 #                                                                      │
-#                                                                    security-scan
+#                                                              container-image-security
+#                                                                      (via standalone workflow)
 # ──────────────────────────────────────────────────────────────────────────────
 
 jobs:
@@ -58,6 +60,7 @@ jobs:
       examples: ${{ steps.detect.outputs.examples }}
       yaml_schema: ${{ steps.detect.outputs.yaml_schema }}
       db_migrations: ${{ steps.detect.outputs.db_migrations }}
+      issue_templates: ${{ steps.detect.outputs.issue_templates }}
     steps:
       - uses: actions/checkout@v7
 
@@ -79,7 +82,7 @@ jobs:
 
           # First push on a new branch has no before SHA — treat as full change
           if [[ -z "$BASE_SHA" || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
-            for key in docker helm api_docs rust_core deps examples yaml_schema db_migrations; do
+            for key in docker helm api_docs rust_core deps examples yaml_schema db_migrations issue_templates; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
             exit 0
@@ -108,10 +111,16 @@ jobs:
             '^(examples/|config/crd/|config/samples/)')" \
             >> "$GITHUB_OUTPUT"
           echo "yaml_schema=$(_match \
-            '^(\.yamllint\.yml|schemas/|config/crd/|config/yaml-validation\.yaml|charts/|examples/|scripts/ci/validate-yaml\.sh|scripts/ci/extract-crd-json-schemas\.py|scripts/validate-yaml-manifests\.py)')" \
+            '^(\.yamllint\.yml|schemas/|config/crd/|config/yaml-validation\.yaml|charts/|examples/|requirements\.txt|\.github/workflows/ci\.yml|scripts/ci/validate-yaml\.sh|scripts/ci/extract-crd-json-schemas\.py|scripts/validate-yaml-manifests\.py|scripts/tests/test_validate_yaml_manifests\.py)')" \
             >> "$GITHUB_OUTPUT"
           echo "db_migrations=$(_match \
             '^(db/|src/db_migrations\.rs|tests/db_migration_harness\.rs|scripts/ci/test-db-migrations\.sh)')" \
+            >> "$GITHUB_OUTPUT"
+          # Issue templates also contain YAML, but the repository-wide validator
+          # only checks Kubernetes/config manifests, so the GitHub Issue Form
+          # schema needs its own gate (see the `issue-template-lint` job).
+          echo "issue_templates=$(_match \
+            '^(\.github/ISSUE_TEMPLATE/)')" \
             >> "$GITHUB_OUTPUT"
 
   # ── 1.5 Repository preflight gate ───────────────────────────────────────────
@@ -193,7 +202,7 @@ jobs:
     name: Repository Hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check Cache Key Consistency
         run: bash scripts/ci/check-cache-keys.sh
@@ -212,7 +221,7 @@ jobs:
       # fails on syntax/structure problems, and validates custom resources
       # against this repo's own CRDs rather than skipping them.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -233,6 +242,33 @@ jobs:
 
       - name: Check Stale TODOs
         run: bash scripts/ci/check-stale-todos.sh
+
+  # ── 2.6. Issue Template Lint (#1623) ───────────────────────────────────────────
+  # GitHub Issue Forms in .github/ISSUE_TEMPLATE/ are YAML but are neither
+  # Kubernetes manifests nor covered by scripts/validate-yaml-manifests.py, so
+  # nothing in CI verified their schema. A malformed form (missing `body`, an
+  # unsupported `type`, a bad `config.yml` shape) silently replaced the GitHub
+  # issue form UI. This job runs the existing linter and is skipped entirely
+  # for PRs that do not touch .github/ISSUE_TEMPLATE/.
+  issue-template-lint:
+    name: Issue Template Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes]
+    if: needs.changes.outputs.issue_templates == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Lint issue templates
+        run: python3 scripts/issue_template_lint.py
 
   # ── 3. Lint & Format ─────────────────────────────────────────────────────────
   lint:
@@ -270,12 +306,18 @@ jobs:
       # interpolated data, curl | bash, missing strict mode). This gate covers
       # those; see docs/development/static-analysis-gates.md.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
       - name: Install YAML tooling
         run: pip install --quiet pyyaml jsonschema
+
+      - name: Install codespell
+        run: pip install --quiet codespell
+
+      - name: Run codespell
+        run: codespell --ignore-words=.codespellignore --skip="Cargo.lock,package-lock.json,target,node_modules,vendor,*-vendor" docs/ src/ *.md
 
       - name: Run shell safety gate
         run: python3 scripts/check-shell-safety.py
@@ -283,13 +325,18 @@ jobs:
       - name: Run shell safety gate unit tests
         run: python3 -m unittest scripts.tests.test_check_shell_safety
 
+      - name: Run semver gate unit tests
+        run: python3 -m unittest scripts.tests.test_semver_gate
+
+      - name: Lint observability resource-attribute contract
+        run: python3 scripts/ci/lint-observability-contract.py
+
+      - name: Run observability contract lint unit tests
+        run: python3 -m unittest scripts.tests.test_lint_observability_contract
+
       - name: Check formatting
         if: needs.changes.outputs.rust_core == 'true'
         run: make fmt-check
-
-      - name: Run clippy (deny all warnings as errors)
-        if: needs.changes.outputs.rust_core == 'true'
-        run: make lint
 
       - name: Run clippy (strict mode - fail on all warnings)
         if: needs.changes.outputs.rust_core == 'true'
@@ -359,7 +406,7 @@ jobs:
     timeout-minutes: 5
     needs: [changes]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run secret-handling checks
         run: |
@@ -373,7 +420,7 @@ jobs:
     timeout-minutes: 5
     needs: [changes]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install bats
         run: sudo apt-get update && sudo apt-get install -y bats
@@ -395,7 +442,7 @@ jobs:
 
       - name: Upload self-test diagnostics bundle
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-diagnostics-selftest-${{ github.run_id }}
           path: /tmp/ci-diagnostics-selftest/
@@ -480,7 +527,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.rust_core == 'true' || needs.changes.outputs.deps == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -620,7 +667,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -688,7 +735,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -761,7 +808,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -911,13 +958,12 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [security-audit, lint, secret-checks, pipeline-log-redaction]
+    needs: [security-audit, lint, secret-checks]
     if: >-
       always() &&
       needs.lint.result == 'success' &&
       needs.secret-checks.result == 'success' &&
-      (needs.security-audit.result == 'success' || needs.security-audit.result == 'skipped') &&
-      (needs.pipeline-log-redaction.result == 'success' || needs.pipeline-log-redaction.result == 'skipped')
+      (needs.security-audit.result == 'success' || needs.security-audit.result == 'skipped')
     steps:
       - uses: actions/checkout@v7
 
@@ -934,14 +980,13 @@ jobs:
     name: Code Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    needs: [security-audit, lint, secret-checks, pipeline-log-redaction]
+    needs: [security-audit, lint, secret-checks]
     if: >-
       github.event_name != 'pull_request' &&
       always() &&
       needs.lint.result == 'success' &&
       needs.secret-checks.result == 'success' &&
-      (needs.security-audit.result == 'success' || needs.security-audit.result == 'skipped') &&
-      (needs.pipeline-log-redaction.result == 'success' || needs.pipeline-log-redaction.result == 'skipped')
+      (needs.security-audit.result == 'success' || needs.security-audit.result == 'skipped')
     steps:
       - uses: actions/checkout@v7
 
@@ -968,48 +1013,6 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
-
-  # ── 10b. Image vulnerability gate (pull requests) ─────────────────────────────
-  # Issue #1334: critical vulnerabilities must block merge. The `docker` job
-  # below only runs on non-PR events, so before this job a pull request could
-  # introduce a critical CVE in the image and never be told. Builds locally and
-  # does not push — nothing from an unreviewed PR reaches the registry.
-  image-scan:
-    name: Image Vulnerability Gate
-    if: >-
-      github.event_name == 'pull_request' &&
-      needs.changes.outputs.docker == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [changes]
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image locally (no push)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: runtime
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: stellar-operator:pr-scan
-          cache-from: type=gha,scope=stellar-k8s-docker
-          provenance: false
-          sbom: false
-
-      - name: Scan image and block on critical vulnerabilities
-        uses: ./.github/actions/security-scan
-        with:
-          image-ref: stellar-operator:pr-scan
-          severity: "CRITICAL,HIGH"
-          fail-on-severity: "CRITICAL"
 
   # ── 11. Docker build & push (main push only) ──────────────────────────────────
   docker:
@@ -1063,46 +1066,7 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
 
-  # ── 12. Security Scan & Binary Verification (main push only) ────────────────────────────────
-  security-scan:
-    name: Security Scan & Binary Verification
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: docker
-    if: github.event_name != 'pull_request'
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Setup Docker & Login
-        id: setup-docker
-        uses: ./.github/actions/setup-docker
-        with:
-          registry: ${{ env.REGISTRY }}
-
-      - name: Pull image for verification
-        run: |
-          docker pull ${{ env.REGISTRY }}/${{ steps.setup-docker.outputs.image-name }}:sha-${{ github.sha }}
-
-      - name: Verify binaries boot
-        run: |
-          docker run --rm ${{ env.REGISTRY }}/${{ steps.setup-docker.outputs.image-name }}:sha-${{ github.sha }} version
-          echo "✓ stellar-operator boots"
-
-          docker run --rm --entrypoint /stellar-fork-detector ${{ env.REGISTRY }}/${{ steps.setup-docker.outputs.image-name }}:sha-${{ github.sha }} --help
-          echo "✓ stellar-fork-detector boots"
-
-          docker run --rm --entrypoint /stellar-watcher ${{ env.REGISTRY }}/${{ steps.setup-docker.outputs.image-name }}:sha-${{ github.sha }} --help
-          echo "✓ stellar-watcher boots"
-
-      - name: Security Scan
-        uses: ./.github/actions/security-scan
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ steps.setup-docker.outputs.image-name }}:sha-${{ github.sha }}
-
-  # ── 13. Chart Render Diff Check ───────────────────────────────────────────────
+  # ── 12. Chart Render Diff Check ───────────────────────────────────────────────
   # Detects unintended Helm chart template drift by comparing rendered output
   # against the render goldens committed under charts/stellar-operator/rendered/.
   # Related: #1045 - Add automated drift detection between Helm templates and
@@ -1124,7 +1088,7 @@ jobs:
           version: "3.14.0"
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -1139,6 +1103,22 @@ jobs:
 
       - name: Run drift gate unit tests
         run: bats scripts/tests/helm-drift.bats
+
+  # ── 15b. Chart Versioning Unit Tests ──────────────────────────────────────
+  # Bats tests for scripts/bump-chart-version.sh (issue #1319): SemVer bump
+  # rules from conventional commits and the versioning.min-bump floor.
+  chart-versioning-tests:
+    name: Chart Versioning Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+
+      - name: Run chart versioning unit tests
+        run: bats scripts/tests/bump-chart-version.bats
 
   # ── 16. Benchmark Sanity Check ────────────────────────────────────────────────
   # Runs quick benchmark sanity checks in PR pipelines to catch regressions.
@@ -1183,7 +1163,7 @@ jobs:
       DEP_GROWTH_LIMIT: "10"
     steps:
       - name: Checkout PR head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

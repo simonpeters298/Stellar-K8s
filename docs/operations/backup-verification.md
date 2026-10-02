@@ -26,7 +26,7 @@ The operator can report that a CSI `VolumeSnapshot` or an S3/pgBackRest
 upload finished without error. That only proves the **write path** worked.
 It does not prove:
 
-- The snapshot is restoreable onto a new PVC
+- The snapshot is restorable onto a new PVC
 - Horizon tables are complete and queryable
 - Stellar Core bucket / ledger hashes match a known-good checkpoint
 - Restore finishes inside your RTO

@@ -16,6 +16,17 @@ set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-stellar-system}"
 
+# Gracefully skip when no cluster is available, so the check reports "skip"
+# rather than "fail" on CI runners and developer machines without a kubeconfig.
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "⚠ kubectl not found — skipping mTLS verification (no cluster access)"
+  exit 0
+fi
+if [[ -z "$(kubectl config current-context 2>/dev/null || true)" ]]; then
+  echo "⚠ No Kubernetes cluster configured — skipping mTLS verification (no kubeconfig/current-context)"
+  exit 0
+fi
+
 echo "→ Verifying mTLS setup in namespace ${NAMESPACE}"
 
 check_cert() {
@@ -60,6 +71,8 @@ echo "    kubectl -n ${NAMESPACE} exec deploy/stellar-operator -- openssl s_clie
 echo ""
 if [[ "${errors}" -eq 0 ]]; then
   echo "✓ mTLS verification passed"
+  exit 0
 else
   echo "⚠ ${errors} certificate(s) not ready — run with mtls.enabled=true and cert-manager installed"
+  exit 1
 fi

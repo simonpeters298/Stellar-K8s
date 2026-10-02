@@ -15,14 +15,18 @@
 #
 # The report is informational: it always exits 0 and writes a Markdown
 # summary to target/reports/dead-code-report.md so CI can upload it as an
-# artifact. Set SKIP_CARGO=1 to skip the compiler pass (used for smoke tests).
+# artifact. Set SKIP_CARGO=1 to skip the compiler pass (used for smoke tests)
+# and DEAD_CODE_REPORT_OUT to write the report somewhere else.
 # shell-safety: disable-file SH001 -- this report must survive a failing cargo pass
 # and always exit 0, so `-e` is deliberately omitted from strict mode.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REPORT_DIR="${REPO_ROOT}/target/reports"
-REPORT="${REPORT_DIR}/dead-code-report.md"
+# DEAD_CODE_REPORT_OUT lets callers (notably scripts/tests/dead-code-report.bats)
+# redirect the report out of the repository's target/ directory. Unset by
+# default, so local and CI runs keep writing to target/reports/.
+REPORT="${DEAD_CODE_REPORT_OUT:-${REPO_ROOT}/target/reports/dead-code-report.md}"
+REPORT_DIR="$(dirname "${REPORT}")"
 CONFIG_FILE="${REPO_ROOT}/config/operator-config.yaml"
 
 mkdir -p "${REPORT_DIR}"

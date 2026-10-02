@@ -59,11 +59,16 @@ Their names, versions, authors, and license identifiers are listed below.
 > Run `make third-party-licenses` to regenerate after updating `Cargo.toml`.
 > Run `make check-third-party-licenses` to verify this file in CI/local checks.
 
+**Workspace members covered:** `stellar-k8s` (main crate), `security/p2p-firewall`,
+`wasm-plugins`.  Shared transitive dependencies appear once; workspace-member-only
+deps are included where they are not already listed.
+
 | Crate | Version | License | Authors |
 |-------|---------|---------|---------|
 HEADER
 
   K8S_OPENAPI_ENABLED_VERSION=1.30 cargo license \
+    --workspace \
     --features "rest-api,metrics,admission-webhook,k8s-v1-30" \
     --avoid-build-deps \
     --avoid-dev-deps \

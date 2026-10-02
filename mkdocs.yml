@@ -5,6 +5,10 @@ repo_url: https://github.com/OtowoOrg/Stellar-K8s
 repo_name: OtowoOrg/Stellar-K8s
 edit_uri: edit/main/docs/
 
+# Fail the build on broken links, unrecognized links, and nav warnings.
+# Local docs builds must also run with strict behavior (mkdocs build --strict).
+strict: true
+
 theme:
   name: material
   palette:
@@ -46,7 +50,7 @@ theme:
 plugins:
   - search:
       lang: en
-      separator: '[\s\-,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+      separator: '[\\s\\-,:!=\\[\\]()"/]+|(?!\\b)(?=[A-Z][a-z])|\\.(?!\\d)|&[lg]t;'
   - minify:
       minify_html: true
       minify_js: true
@@ -107,6 +111,7 @@ nav:
     - CRD Reference: configuration/crd-reference.md
     - Operators: configuration/operators.md
     - Storage: configuration/storage.md
+    - Validator Container Command: configuration/validator-command.md
     - Database Optimization: database/optimization-guide.md
   - Tutorials:
     - tutorials/index.md
@@ -115,6 +120,8 @@ nav:
     - Backup and Restore: tutorials/backup-restore.md
   - Operations & Observability:
     - SCP Consensus Topology and Monitoring: scp-consensus-topology-and-monitoring.md
+    - Monitoring and Dashboards Setup Guide: MONITORING_SETUP_GUIDE.md
+    - Monitoring and Dashboards Operational Runbook: MONITORING_OPERATIONAL_RUNBOOK.md
     - Production Profiling Runbook: operations/profiling-runbook.md
     - Core Blue/Green Runbook: operations/core-blue-green-runbook.md
     - OpenTelemetry Tracing: observability/tracing.md

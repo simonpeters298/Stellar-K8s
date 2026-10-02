@@ -508,6 +508,35 @@ pub struct StellarNodeSpec {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority_class_name: Option<String>,
+
+    /// Optional command override for the main container.
+    ///
+    /// When set, this overrides the operator's default command for the node type.
+    /// Useful for custom images that do not follow the standard Stellar image conventions.
+    ///
+    /// Default commands by node type:
+    /// - Validator: `["/usr/bin/stellar-core", "run", "--conf", "/config/stellar-core.cfg"]`
+    /// - Horizon: `["/stellar-horizon"]`
+    /// - SorobanRpc: `["/stellar-rpc"]`
+    ///
+    /// # Example
+    /// ```yaml
+    /// command: ["/custom/stellar-core", "--config", "/custom/config.cfg"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+
+    /// Optional arguments override for the main container.
+    ///
+    /// When set, this overrides the operator's default arguments for the node type.
+    /// Used in conjunction with `command` for custom image entrypoints.
+    ///
+    /// # Example
+    /// ```yaml
+    /// args: ["--verbose", "--log-level=debug"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
 }
 
 fn default_network_policy() -> Option<NetworkPolicyConfig> {

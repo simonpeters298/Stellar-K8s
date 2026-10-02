@@ -53,5 +53,7 @@ Key signals to monitor:
 
 - [Incident Response](incident-response.md)
 - [Production Profiling Runbook](profiling-runbook.md)
+- [Readiness Probe State Machine Coverage](readiness-probe-states.md)
+- [Container Command Configuration](container-commands.md)
 - [API Reference](../api/index.md)
 - [Production Security Hardening](../production-security-hardening.md)

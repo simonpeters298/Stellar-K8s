@@ -39,6 +39,7 @@ use super::types::{
 };
 use crate::crd::{StellarNode, StellarNodeSpec};
 use crate::error::{Error, Result};
+use crate::policy_engine::{AdmissionView, PolicyEngine, TrustRoot};
 
 /// Webhook server state
 pub struct WebhookServer {
@@ -56,6 +57,9 @@ pub struct WebhookServer {
 
     /// HTTP client used for external policy delegation requests.
     policy_http: reqwest::Client,
+
+    /// Signed CEL policy-bundle engine (fail-closed when a bundle is active).
+    policy_engine: Arc<PolicyEngine>,
 }
 
 #[derive(Clone, Debug)]
@@ -187,7 +191,19 @@ impl WebhookServer {
                 fail_open,
             },
             policy_http,
+            policy_engine: Arc::new(PolicyEngine::new(TrustRoot::empty())),
         }
+    }
+
+    /// Replace the default policy engine (tests and key-management wiring).
+    pub fn with_policy_engine(mut self, engine: Arc<PolicyEngine>) -> Self {
+        self.policy_engine = engine;
+        self
+    }
+
+    /// Shared signed-policy engine used by `/validate` and `/validate/policy`.
+    pub fn policy_engine(&self) -> &PolicyEngine {
+        &self.policy_engine
     }
 
     async fn delegate_policy_check(&self, input: &ValidationInput) -> ValidationOutput {
@@ -340,6 +356,12 @@ impl WebhookServer {
                     return builtin;
                 }
 
+                if let Some(denied) =
+                    evaluate_signed_policy(&self.policy_engine, &input, &mut warnings)
+                {
+                    return denied;
+                }
+
                 let delegated = self.delegate_policy_check(&input).await;
                 warnings.extend(delegated.warnings.clone());
                 if !delegated.allowed {
@@ -446,30 +468,130 @@ impl WebhookServer {
             .with_state(state)
     }
 
-    /// Start the webhook server
+    /// Start the webhook server.
+    ///
+    /// With TLS configured, the certificate/private-key pair is validated
+    /// *before* the listener is exposed so the process fails closed on a broken
+    /// identity. The mounted Secret is then watched, and the TLS listener is
+    /// gracefully drained and rebound as soon as cert-manager rotates the
+    /// serving certificate — no rejected admission requests, no manual restart.
+    ///
+    /// Plain HTTP is only used for local development when no TLS paths are
+    /// supplied.
     pub async fn start(self, addr: SocketAddr) -> Result<()> {
-        // Check TLS config before moving self into the router
-        let has_tls = self.tls_config.is_some();
+        let tls_config = self.tls_config.clone();
         let app = self.into_router();
 
-        info!("Starting webhook server on {}", addr);
+        let Some(tls) = tls_config else {
+            let listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .map_err(|e| Error::PluginError(format!("Failed to bind to {addr}: {e}")))?;
+            info!(address = %addr, tls = false, "webhook server listening (plaintext)");
+            axum::serve(listener, app)
+                .await
+                .map_err(|e| Error::PluginError(format!("Server error: {e}")))?;
+            return Ok(());
+        };
 
-        // Check if TLS is configured
-        if has_tls {
-            // TODO(exempt: pending rustls server): Implement TLS server with rustls
-            // For now, fall back to non-TLS
-            warn!("TLS configuration provided but not yet implemented, using plain HTTP");
+        info!(address = %addr, tls = true, "starting TLS webhook server");
+
+        // Fail closed: an incoherent certificate/key pair must never be served.
+        super::cert_health::load_server_config(&tls.cert_path, &tls.key_path)
+            .map_err(|e| Error::WebhookError(format!("Invalid webhook TLS identity: {e}")))?;
+
+        let mut fingerprint = tls_fingerprint(&tls.cert_path, &tls.key_path)?;
+
+        loop {
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                tls.cert_path.clone(),
+                tls.key_path.clone(),
+            )
+            .await
+            .map_err(|e| {
+                Error::WebhookError(format!("Failed to load webhook TLS material: {e}"))
+            })?;
+
+            let handle = axum_server::Handle::new();
+            let watcher_fingerprint = fingerprint;
+            let watcher_handle = handle.clone();
+            let cert_path = tls.cert_path.clone();
+            let key_path = tls.key_path.clone();
+
+            let make_service = app.clone().into_make_service();
+            let mut server = tokio::spawn(async move {
+                axum_server::bind_rustls(addr, config)
+                    .handle(watcher_handle)
+                    .serve(make_service)
+                    .await
+            });
+
+            let reloaded = tokio::select! {
+                result = &mut server => {
+                    result
+                        .map_err(|e| Error::PluginError(format!("Webhook server task failed: {e}")))?
+                        .map_err(|e| Error::PluginError(format!("Server error: {e}")))?;
+                    false
+                }
+                _ = wait_for_tls_rotation(watcher_fingerprint, cert_path, key_path) => true
+            };
+
+            if !reloaded {
+                return Ok(());
+            }
+
+            info!("webhook serving certificate rotated; draining connections and rebinding");
+            // Draining keeps in-flight admission requests alive across the
+            // rotation window: the listener is only released once every
+            // connection has finished, so no admission request is refused and
+            // the bind below cannot race the previous listener.
+            handle.graceful_shutdown(Some(TLS_DRAIN_TIMEOUT));
+            let _ = (&mut server).await;
+
+            fingerprint = tls_fingerprint(&tls.cert_path, &tls.key_path)?;
         }
+    }
+}
 
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| Error::PluginError(format!("Failed to bind to {addr}: {e}")))?;
+/// Maximum time in-flight admission connections may finish while a rotated
+/// serving certificate is being rebound.
+const TLS_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| Error::PluginError(format!("Server error: {e}")))?;
+/// Poll interval for detecting a rotated certificate on the mounted Secret.
+const TLS_ROTATION_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-        Ok(())
+/// Cheap content fingerprint of the mounted TLS material.
+///
+/// cert-manager atomically swaps the projected Secret, so content comparison
+/// (rather than mtime) is what actually detects a rotation.
+fn tls_fingerprint(cert_path: &str, key_path: &str) -> Result<(u64, u64)> {
+    let cert = std::fs::read(cert_path)
+        .map_err(|e| Error::WebhookError(format!("Failed to read {cert_path}: {e}")))?;
+    let key = std::fs::read(key_path)
+        .map_err(|e| Error::WebhookError(format!("Failed to read {key_path}: {e}")))?;
+    Ok((hash_bytes(&cert), hash_bytes(&key)))
+}
+
+/// FNV-1a: the fingerprint only needs to detect change, not resist attacks.
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Resolve once the mounted certificate material differs from `baseline`.
+async fn wait_for_tls_rotation(baseline: (u64, u64), cert_path: String, key_path: String) {
+    let mut ticker = tokio::time::interval(TLS_ROTATION_POLL_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        if let Ok(current) = tls_fingerprint(&cert_path, &key_path) {
+            if current != baseline {
+                return;
+            }
+        }
     }
 }
 
@@ -484,24 +606,17 @@ async fn health_handler(State(state): State<Arc<WebhookServer>>) -> impl IntoRes
 }
 
 async fn ready_handler(State(state): State<Arc<WebhookServer>>) -> impl IntoResponse {
+    // WASM plugins are optional: built-in validation is always active. Requiring
+    // a plugin would leave a freshly installed, fully valid webhook permanently
+    // unready and turn all matching admission requests into fail-closed errors.
     let plugins = state.plugins.read().await;
-    if plugins.is_empty() {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(HealthResponse {
-                status: "no plugins loaded".to_string(),
-                plugins_loaded: 0,
-            }),
-        )
-    } else {
-        (
-            StatusCode::OK,
-            Json(HealthResponse {
-                status: "ready".to_string(),
-                plugins_loaded: plugins.len(),
-            }),
-        )
-    }
+    (
+        StatusCode::OK,
+        Json(HealthResponse {
+            status: "ready".to_string(),
+            plugins_loaded: plugins.len(),
+        }),
+    )
 }
 
 #[instrument(
@@ -661,6 +776,19 @@ async fn validate_policy_handler(
 
     let req: AdmissionRequest<StellarNode> = request;
     let input = build_validation_input(&req);
+    let mut warnings = Vec::new();
+    if let Some(denied) = evaluate_signed_policy(&state.policy_engine, &input, &mut warnings) {
+        let reason = denied
+            .message
+            .as_deref()
+            .unwrap_or("Denied by signed policy");
+        log_validation_rejection(&req, reason);
+        let mut response = AdmissionResponse::from(&req).deny(reason.to_string());
+        if !denied.warnings.is_empty() {
+            response.warnings = Some(denied.warnings);
+        }
+        return (StatusCode::OK, Json(response.into_review()));
+    }
     let delegated = state.delegate_policy_check(&input).await;
 
     if !delegated.allowed {
@@ -710,6 +838,13 @@ fn default_security_policy_library() -> Vec<SecurityPolicyInfo> {
             engine: "cel".to_string(),
             description: "Built-in CEL rules in the StellarNode CRD schema.".to_string(),
             path: "config/crd/stellarnode-crd.yaml".to_string(),
+        },
+        SecurityPolicyInfo {
+            name: "signed-policy-bundle".to_string(),
+            engine: "cel".to_string(),
+            description: "Ed25519-signed CEL policy bundles evaluated fail-closed at admission."
+                .to_string(),
+            path: "config/crd/stellarpolicybundle-crd.yaml".to_string(),
         },
     ]
 }
@@ -1036,6 +1171,46 @@ fn check_image_pinning(spec: &StellarNodeSpec) -> Vec<String> {
         }
     }
     warnings
+}
+
+fn admission_view_from_input(input: &ValidationInput) -> AdmissionView {
+    AdmissionView {
+        operation: format!("{:?}", input.operation).to_ascii_uppercase(),
+        namespace: input.namespace.clone(),
+        name: input.name.clone(),
+        object: input.object.clone(),
+        username: input.user_info.username.clone(),
+    }
+}
+
+fn evaluate_signed_policy(
+    engine: &PolicyEngine,
+    input: &ValidationInput,
+    warnings: &mut Vec<String>,
+) -> Option<ServerValidationResult> {
+    if !engine.is_enforced() {
+        return None;
+    }
+    match engine.admit(&admission_view_from_input(input)) {
+        Ok(decision) if decision.allowed => {
+            warnings.extend(decision.warnings);
+            None
+        }
+        Ok(decision) => Some(ServerValidationResult {
+            allowed: false,
+            message: decision.message,
+            warnings: warnings.clone(),
+            plugin_results: vec![],
+            total_execution_time_ms: decision.eval_duration.as_millis() as u64,
+        }),
+        Err(e) => Some(ServerValidationResult {
+            allowed: false,
+            message: Some(format!("Policy engine fail-closed: {e}")),
+            warnings: warnings.clone(),
+            plugin_results: vec![],
+            total_execution_time_ms: 0,
+        }),
+    }
 }
 
 /// Build ValidationInput from AdmissionRequest

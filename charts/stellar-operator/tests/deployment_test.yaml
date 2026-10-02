@@ -85,6 +85,24 @@ tests:
           path: spec.template.spec.containers[0].args[0]
           value: run
 
+  - it: omits AppArmor env when disabled
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STELLAR_APPARMOR_ENABLED
+            value: "true"
+
+  - it: enables AppArmor env when configured
+    set:
+      operator.appArmorEnabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: STELLAR_APPARMOR_ENABLED
+            value: "true"
+
   - it: omits profiling env when profiling disabled
     asserts:
       - notContains:

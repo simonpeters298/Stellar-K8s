@@ -174,7 +174,7 @@ net.ipv4.tcp_tw_reuse = 1
 # Increase TCP connection backlog
 net.ipv4.tcp_max_tw_buckets = 2000000
 
-# Send keep-alives for idle connections
+# Send keep-alive for idle connections
 net.ipv4.tcp_keepalives_intvl = 60
 net.ipv4.tcp_keepalives_probes = 3
 net.ipv4.tcp_keepalives_time = 300

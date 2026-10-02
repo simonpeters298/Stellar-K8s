@@ -18,6 +18,7 @@
 //!
 //! Related: #1154 - Add pipeline stage that validates every documented CLI example command
 
+use assert_cmd::Command;
 use clap::Parser;
 use stellar_k8s::cli::{Args, Commands, RunArgs, SimulatorUpArgs, WebhookArgs};
 
@@ -460,8 +461,6 @@ fn invalid_command_fails() {
     assert!(result.is_err(), "Unknown commands should fail");
     println!("✓ Invalid commands are rejected");
 }
-
-use assert_cmd::Command;
 
 #[test]
 fn test_cli_help_examples() {

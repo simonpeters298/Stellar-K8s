@@ -115,6 +115,24 @@ pub struct AdmissionPolicy {
     pub block_unsigned: bool,
     #[serde(default = "default_true")]
     pub enforce_on_deploy: bool,
+    /// Gate enforced on the registry pull path, independent of admission
+    /// webhooks (see `controller::registry_gate`).
+    #[serde(default)]
+    pub pull_gate: PullGateMode,
+}
+
+/// How the registry pull path treats unscanned or critically vulnerable
+/// artifacts.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PullGateMode {
+    /// No pull-path gating.
+    #[default]
+    Off,
+    /// Allow the pull but report what would have been denied.
+    Audit,
+    /// Deny unscanned and over-threshold artifacts.
+    Enforce,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]

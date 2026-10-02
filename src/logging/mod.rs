@@ -67,18 +67,28 @@ pub struct StructuredLog {
     /// OpenTelemetry Span ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span_id: Option<String>,
-    /// Kubernetes Node Name
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Kubernetes Node Name — wire name is `k8s_node` (matches `fields::K8S_NODE`).
+    #[serde(rename = "k8s_node", skip_serializing_if = "Option::is_none")]
     pub k8s_node: Option<String>,
-    /// Kubernetes Namespace
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Kubernetes Namespace — wire name is `namespace` (matches `fields::NAMESPACE`).
+    #[serde(rename = "namespace", skip_serializing_if = "Option::is_none")]
     pub k8s_namespace: Option<String>,
-    /// Controller reconcile ID
+    /// Controller reconcile ID — stored as a string for forward compatibility
+    /// with u64 values emitted from tracing spans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reconcile_id: Option<String>,
     /// Request correlation ID across service boundaries
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+    /// Observability contract version (issue #1481)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stellar_observability_contract_version: Option<String>,
+    /// Canonical pod name for log-to-trace pivots
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub k8s_pod_name: Option<String>,
+    /// Service instance identity (pod UID)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_instance_id: Option<String>,
     /// Arbitrary additional context
     #[serde(flatten)]
     pub extras: HashMap<String, serde_json::Value>,
@@ -142,11 +152,128 @@ impl tracing::field::Visit for MessageVisitor {
     }
 }
 
+/// A builder that assembles a consistent set of key-value context fields to be
+/// attached to a `tracing` span.
+///
+/// All field names are sourced from [`fields`] to prevent drift between
+/// call-sites and log aggregation pipelines.
+///
+/// # Example
+///
+/// ```rust
+/// use stellar_k8s::logging::{LogContext, fields as F};
+///
+/// let ctx = LogContext::new()
+///     .node("my-validator")
+///     .namespace("stellar")
+///     .reconcile_id(42)
+///     .component("controller");
+///
+/// let span = tracing::info_span!(
+///     "reconcile",
+///     { F::NODE }         = ctx.node.as_deref().unwrap_or(""),
+///     { F::NAMESPACE }    = ctx.namespace.as_deref().unwrap_or(""),
+///     { F::RECONCILE_ID } = ctx.reconcile_id.unwrap_or(0),
+///     { F::COMPONENT }    = ctx.component.as_deref().unwrap_or(""),
+/// );
+/// ```
+#[derive(Debug, Default, Clone)]
+pub struct LogContext {
+    /// StellarNode resource name (`node`).
+    pub node: Option<String>,
+    /// Kubernetes namespace (`namespace`).
+    pub namespace: Option<String>,
+    /// Monotonic reconcile counter (`reconcile_id`).
+    pub reconcile_id: Option<u64>,
+    /// Sub-system emitting the log (`component`).
+    pub component: Option<String>,
+    /// Lifecycle phase (`phase`).
+    pub phase: Option<String>,
+    /// Kubernetes node (host) name (`k8s_node`).
+    pub k8s_node: Option<String>,
+    /// Cloud/geographic region (`region`).
+    pub region: Option<String>,
+    /// Request correlation ID (`correlation_id`).
+    pub correlation_id: Option<String>,
+    /// Remote peer address (`peer_addr`).
+    pub peer_addr: Option<String>,
+    /// Inbound request ID (`request_id`).
+    pub request_id: Option<String>,
+}
+
+impl LogContext {
+    /// Create an empty context.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the `node` field.
+    pub fn node(mut self, v: impl Into<String>) -> Self {
+        self.node = Some(v.into());
+        self
+    }
+
+    /// Set the `namespace` field.
+    pub fn namespace(mut self, v: impl Into<String>) -> Self {
+        self.namespace = Some(v.into());
+        self
+    }
+
+    /// Set the `reconcile_id` field.
+    pub fn reconcile_id(mut self, v: u64) -> Self {
+        self.reconcile_id = Some(v);
+        self
+    }
+
+    /// Set the `component` field.
+    pub fn component(mut self, v: impl Into<String>) -> Self {
+        self.component = Some(v.into());
+        self
+    }
+
+    /// Set the `phase` field.
+    pub fn phase(mut self, v: impl Into<String>) -> Self {
+        self.phase = Some(v.into());
+        self
+    }
+
+    /// Set the `k8s_node` field.
+    pub fn k8s_node(mut self, v: impl Into<String>) -> Self {
+        self.k8s_node = Some(v.into());
+        self
+    }
+
+    /// Set the `region` field.
+    pub fn region(mut self, v: impl Into<String>) -> Self {
+        self.region = Some(v.into());
+        self
+    }
+
+    /// Set the `correlation_id` field.
+    pub fn correlation_id(mut self, v: impl Into<String>) -> Self {
+        self.correlation_id = Some(v.into());
+        self
+    }
+
+    /// Set the `peer_addr` field.
+    pub fn peer_addr(mut self, v: impl Into<String>) -> Self {
+        self.peer_addr = Some(v.into());
+        self
+    }
+
+    /// Set the `request_id` field.
+    pub fn request_id(mut self, v: impl Into<String>) -> Self {
+        self.request_id = Some(v.into());
+        self
+    }
+}
+
 /// Helper to build the structured log object from a tracing event
 pub fn build_structured_log(event: &Event<'_>) -> StructuredLog {
     let metadata = event.metadata();
     let mut visitor = FullVisitor::default();
     event.record(&mut visitor);
+    let contract = crate::observability_contract::log_correlation_fields();
 
     StructuredLog {
         timestamp: Utc::now().to_rfc3339(),
@@ -163,13 +290,30 @@ pub fn build_structured_log(event: &Event<'_>) -> StructuredLog {
         reconcile_id: visitor
             .extras
             .get("reconcile_id")
-            .and_then(|v| v.as_str().map(|s| s.to_string())),
+            .map(|v| match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                other => other.to_string(),
+            }),
         correlation_id: visitor
             .extras
             .get("correlation_id")
             .or_else(|| visitor.extras.get("x_correlation_id"))
             .and_then(|v| v.as_str().map(|s| s.to_string())),
-        extras: visitor.extras,
+        stellar_observability_contract_version: Some(
+            crate::observability_contract::CONTRACT_VERSION.to_string(),
+        ),
+        k8s_pod_name: contract.get("k8s.pod.name").cloned(),
+        service_instance_id: contract.get("service.instance.id").cloned(),
+        extras: {
+            let mut extras = visitor.extras;
+            for (key, value) in contract {
+                extras
+                    .entry(key)
+                    .or_insert_with(|| serde_json::Value::String(value));
+            }
+            extras
+        },
     }
 }
 
@@ -258,6 +402,9 @@ mod tests {
             k8s_namespace: Some("default".to_string()),
             reconcile_id: Some("rec-123".to_string()),
             correlation_id: Some("corr-456".to_string()),
+            stellar_observability_contract_version: Some("1.0.0".to_string()),
+            k8s_pod_name: Some("stellar-operator-0".to_string()),
+            service_instance_id: Some("uid-1".to_string()),
             extras,
         };
 
@@ -292,6 +439,9 @@ mod tests {
             k8s_namespace: None,
             reconcile_id: None,
             correlation_id: None,
+            stellar_observability_contract_version: None,
+            k8s_pod_name: None,
+            service_instance_id: None,
             extras,
         };
 

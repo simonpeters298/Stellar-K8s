@@ -154,13 +154,21 @@ All original targets remain functional:
 
 ## CI/CD Impact
 
-No changes required to CI workflows. All targets used in `.github/workflows/ci.yml` are preserved:
+No changes required to CI workflows. The targets actually invoked from
+`.github/workflows/*.yml` are:
+
+- `make preflight`
 - `make fmt-check`
 - `make lint`
 - `make lint-strict`
+- `make check-third-party-licenses`
+- `make check-api-docs`
+- `make crd-gen`
 - `make helm-lint`
 - `make test`
-- `make build`
+
+Note: CI does **not** call `make build`; releases and CI builds go through the
+`build-operator` composite action. The target remains available locally.
 
 ## Migration Guide
 
@@ -241,3 +249,53 @@ make build
 4. **Documentation**: Each target has a single, clear purpose
 5. **Backward Compatibility**: All existing workflows continue to work
 6. **CI Stability**: No changes required to CI/CD pipelines
+
+---
+
+## Cleanup Wave Changes (Issue #935)
+
+### New Targets Added
+
+The following targets were added during the cleanup wave to normalise the Makefile
+and expose tooling that was previously only invocable via raw script paths.
+
+| Target | Command | Description |
+|---|---|---|
+| `check-openapi-spec` | `python3 scripts/generate-openapi-spec.py --check` | Validates OpenAPI spec coverage |
+| `third-party-licenses` | `bash scripts/generate-third-party-licenses.sh` | Regenerates `THIRD_PARTY_LICENSES.md` |
+| `check-third-party-licenses` | `bash scripts/generate-third-party-licenses.sh --check` | CI gate: fails if licenses are stale |
+| `generate-sbom` | `cargo cyclonedx` | Generates CycloneDX SBOM at `stellar-k8s.cdx.json` |
+| `p2p-firewall` | `cargo build --release -p p2p-firewall` | Builds the P2P firewall binary |
+
+### `.PHONY` Normalisation
+
+All new targets were added to the `.PHONY` declaration at the top of the
+Makefile to prevent Make from treating them as file build rules.
+
+### Help Coverage
+
+All targets include a `## description` comment so the `help` target (which
+uses `awk` with `FS = ":.*?## "`) automatically includes them in its output.
+
+### Background: License and SBOM Targets
+
+`make third-party-licenses` and `make check-third-party-licenses` were previously
+referenced in the auto-generated header of `THIRD_PARTY_LICENSES.md` but no
+Makefile targets existed for them.  The new targets close that gap.
+
+`make check-third-party-licenses` is intended to be added as a CI check step
+alongside `cargo audit` and `cargo deny` to ensure the license file never drifts
+from the actual dependency tree.
+
+### Background: p2p-firewall Target
+
+The `security/p2p-firewall` crate is a workspace member.  `make p2p-firewall`
+provides a short alias for building it without needing to remember the `-p` flag:
+
+```bash
+# Before (hard to discover)
+cargo build --release --locked -p p2p-firewall
+
+# After (discoverable via make help)
+make p2p-firewall
+```

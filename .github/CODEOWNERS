@@ -27,6 +27,7 @@ README.md              @stellar-k8s-maintainers @docs-team
 # Monitoring & Observability
 /src/telemetry.rs      @observability-team
 /monitoring/           @observability-team
+/config/slo/           @observability-team @stellar-k8s-maintainers
 /src/controller/metrics.rs @observability-team
 
 # Backup & Archive

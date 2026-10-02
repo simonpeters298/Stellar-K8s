@@ -240,7 +240,13 @@ mod tests {
         );
 
         assert_eq!(log.entries().len(), 2);
-        assert!(log.entries().iter().any(|e| e.action == SecretAuditAction::Access));
-        assert!(log.entries().iter().any(|e| e.action == SecretAuditAction::Rotate));
+        assert!(log
+            .entries()
+            .iter()
+            .any(|e| e.action == SecretAuditAction::Access));
+        assert!(log
+            .entries()
+            .iter()
+            .any(|e| e.action == SecretAuditAction::Rotate));
     }
 }

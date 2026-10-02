@@ -94,7 +94,7 @@ pub fn window_config(config: &DbMaintenanceConfig) -> (NaiveTime, ChronoDuration
         .unwrap_or_else(|_| NaiveTime::from_hms_opt(2, 0, 0).unwrap());
     let duration = parse_duration_str(&config.window_duration).unwrap_or_else(|| {
         warn!(
-            "Unparseable window_duration {:?} for maintenance; defaulting to 2h",
+            "Unparsable window_duration {:?} for maintenance; defaulting to 2h",
             config.window_duration
         );
         ChronoDuration::hours(2)

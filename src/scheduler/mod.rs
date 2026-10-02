@@ -11,6 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 pub mod affinity;
+pub mod capacity;
 pub mod constraints;
 pub mod core;
 pub mod cost;
@@ -18,7 +19,9 @@ pub mod latency_monitor;
 pub mod metrics;
 pub mod optimizer;
 pub mod preemption;
+pub mod preemptive_migration;
 pub mod prometheus;
+pub mod savings;
 pub mod scoring;
 pub mod simulation;
 pub mod visualization;

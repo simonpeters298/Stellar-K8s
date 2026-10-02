@@ -60,6 +60,17 @@ impl SchedulingMetricsCollector {
         self.metrics.cost_savings_usd += saved_usd;
     }
 
+    /// Record savings implied by a placement report (spot vs on-demand).
+    pub fn record_placement_report(
+        &mut self,
+        report: &super::capacity::PlacementReport,
+        ts: DateTime<Utc>,
+    ) {
+        let mut agg = super::savings::SavingsAggregator::new();
+        agg.record_placement(ts, report);
+        self.record_cost_saving(agg.cumulative_usd());
+    }
+
     pub fn snapshot(&self) -> SchedulingMetrics {
         self.metrics.clone()
     }
@@ -87,5 +98,23 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
 impl Default for SchedulingMetricsCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scheduler::capacity::{best_effort_workload, defined_test_cluster, place_workloads};
+
+    #[test]
+    fn placement_report_feeds_existing_cost_savings_metric() {
+        let nodes = defined_test_cluster();
+        let workloads: Vec<_> = (0..8)
+            .map(|i| best_effort_workload(&format!("be-{i}")))
+            .collect();
+        let report = place_workloads(&workloads, &nodes, &[]);
+        let mut collector = SchedulingMetricsCollector::new();
+        collector.record_placement_report(&report, Utc::now());
+        assert!(collector.snapshot().cost_savings_usd > 0.0);
     }
 }

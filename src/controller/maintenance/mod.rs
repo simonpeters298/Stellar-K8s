@@ -21,6 +21,8 @@ pub mod coordinator;
 pub mod db;
 pub mod node_drain;
 pub mod pruner;
+pub mod plan_controller;
+pub mod plan_engine;
 pub mod query_profiler;
 pub mod vacuum;
 
@@ -37,5 +39,7 @@ pub use db::{
 };
 pub use node_drain::NodeDrainOrchestrator;
 pub use pruner::{Pruner, PrunerConfig, PruningResult, run_pruner_controller};
+pub use plan_controller::run_maintenance_plan_controller;
+pub use plan_engine::{reconcile_plan, SimulatedCluster};
 pub use query_profiler::{IndexSuggestion, QueryProfiler, SlowQuery};
 pub use vacuum::{run_vacuum_controller, DefragResult, VacuumConfig, VacuumDefrag};

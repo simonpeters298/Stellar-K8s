@@ -92,15 +92,15 @@ pub struct AnomalyEvent {
     pub message: String,
 }
 
-#[derive(Debug, Default)]
-struct EwmaState {
-    mean: f64,
-    variance: f64,
-    initialized: bool,
+#[derive(Debug, Default, Clone)]
+pub struct EwmaState {
+    pub mean: f64,
+    pub variance: f64,
+    pub initialized: bool,
 }
 
 impl EwmaState {
-    fn update(&mut self, value: f64, alpha: f64) {
+    pub fn update(&mut self, value: f64, alpha: f64) {
         if !self.initialized {
             self.mean = value;
             self.variance = 0.0;

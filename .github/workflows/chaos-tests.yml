@@ -35,8 +35,6 @@ on:
         description: "Chaos Mesh Helm chart version"
         required: false
         default: "2.6.3"
-  schedule:
-    - cron: "0 2 * * *"   # 02:00 UTC nightly
 
 env:
   CARGO_TERM_COLOR: always
@@ -821,7 +819,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

@@ -271,6 +271,7 @@ mod tests {
                     block_vulnerable: true,
                     block_unsigned: true,
                     enforce_on_deploy: true,
+                    ..Default::default()
                 },
                 mirrors: vec![
                     RegistryMirror {

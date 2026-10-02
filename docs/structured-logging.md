@@ -69,3 +69,120 @@ kubectl logs -n stellar-system deploy/stellar-operator | head -1 | python3 -m js
 
 Redaction of sensitive fields (validator seeds etc.) is handled separately by
 `src/logging/log_scrub.rs` — see [Log Redaction Policy](../docs/log-redaction-policy.md).
+
+---
+
+## JSON Field Reference
+
+All call-sites **must** use the constants from `src/logging/fields.rs` instead
+of bare string literals. This prevents field-name drift between CI log
+aggregation pipelines and runtime logs.
+
+Import pattern:
+
+```rust
+use stellar_k8s::logging::fields as F;
+```
+
+| Constant | Wire name | Type | Description |
+|---|---|---|---|
+| `F::NODE` | `node` | string | StellarNode resource name |
+| `F::NAMESPACE` | `namespace` | string | Kubernetes namespace |
+| `F::NODE_TYPE` | `node_type` | string | `Validator` / `Horizon` / `SorobanRpc` |
+| `F::CLUSTER` | `cluster` | string | Kubernetes cluster name or ARN |
+| `F::K8S_NODE` | `k8s_node` | string | Kubernetes host node name |
+| `F::RECONCILE_ID` | `reconcile_id` | u64 | Monotonic reconcile counter |
+| `F::PHASE` | `phase` | string | Lifecycle phase (`init`, `reconcile`, `cleanup`) |
+| `F::ERROR` | `error` | string | Error description — use `%err` (Display), not `?err` (Debug) |
+| `F::DURATION_MS` | `duration_ms` | u64 | Operation duration in milliseconds |
+| `F::COMPONENT` | `component` | string | Sub-system emitting the log |
+| `F::LEDGER` | `ledger` | u64 | Stellar ledger sequence number |
+| `F::VERSION` | `version` | string | Image / software version |
+| `F::REGION` | `region` | string | Cloud / geographic region |
+| `F::JOB_ID` | `job_id` | string | Background job identifier |
+| `F::AUDIT_ACTION` | `audit_action` | string | Audit trail action string |
+| `F::SCRUB_PATTERN` | `scrub_pattern` | string | Regex pattern name that triggered redaction |
+| `F::TRACE_ID` | `trace_id` | string | W3C trace ID (OTel) |
+| `F::SPAN_ID` | `span_id` | string | W3C span ID (OTel) |
+| `F::CORRELATION_ID` | `correlation_id` | string | Request correlation ID across service boundaries |
+| `F::CI_STEP` | `ci_step` | string | CI pipeline step / job name |
+| `F::GIT_SHA` | `git_sha` | string | Git commit SHA |
+| `F::FEATURES` | `features` | string | Active Cargo feature flags |
+| `F::PEER_ADDR` | `peer_addr` | string | Remote peer address (`IP:port`) |
+| `F::REQUEST_ID` | `request_id` | string | Inbound HTTP / gRPC request ID |
+
+### Key consistency rules
+
+- **`error`** — always use `%err` (Display) so the JSON value is a plain
+  human-readable string, not a Rust Debug representation.
+- **`duration_ms`** — always pass a `u64` so the JSON value is a number.
+  Aggregators (Loki LogQL, Prometheus) can compute averages directly.
+- **`reconcile_id`** — always pass a `u64`. `StructuredLog::reconcile_id`
+  handles both string and numeric span values for forward compatibility.
+- **`namespace`** — `StructuredLog` serialises `k8s_namespace` with
+  `#[serde(rename = "namespace")]`, so the wire name always matches `F::NAMESPACE`.
+
+---
+
+## Common Usage Patterns
+
+### 1. Span with standard context fields
+
+```rust
+use stellar_k8s::logging::fields as F;
+
+let span = tracing::info_span!(
+    "reconcile",
+    { F::NODE }         = %node_name,
+    { F::NAMESPACE }    = %namespace,
+    { F::RECONCILE_ID } = reconcile_id,
+    { F::COMPONENT }    = "controller",
+);
+let _enter = span.enter();
+tracing::info!("Reconciliation started");
+```
+
+### 2. Using `LogContext` builder
+
+`LogContext` collects all standard fields in one place and lets you pass them
+into a span without repeating field names:
+
+```rust
+use stellar_k8s::logging::{LogContext, fields as F};
+
+let ctx = LogContext::new()
+    .node("my-validator")
+    .namespace("stellar")
+    .reconcile_id(42)
+    .component("disk-scaler");
+
+let span = tracing::info_span!(
+    "disk_scale",
+    { F::NODE }         = ctx.node.as_deref().unwrap_or(""),
+    { F::NAMESPACE }    = ctx.namespace.as_deref().unwrap_or(""),
+    { F::RECONCILE_ID } = ctx.reconcile_id.unwrap_or(0),
+    { F::COMPONENT }    = ctx.component.as_deref().unwrap_or(""),
+);
+```
+
+### 3. Logging errors (Display form)
+
+```rust
+use stellar_k8s::logging::fields as F;
+
+if let Err(err) = do_something() {
+    tracing::error!({ F::ERROR } = %err, "operation failed");
+}
+```
+
+### 4. Recording latency
+
+```rust
+use stellar_k8s::logging::fields as F;
+use std::time::Instant;
+
+let start = Instant::now();
+do_work();
+let duration_ms = start.elapsed().as_millis() as u64;
+tracing::info!({ F::DURATION_MS } = duration_ms, "work complete");
+```

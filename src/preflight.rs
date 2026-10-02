@@ -66,7 +66,7 @@ pub const REQUIRED_LOCAL_TOOLS: &[(&str, &str)] = &[
 const GH_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Severity of a preflight check result
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
 pub enum CheckSeverity {
     /// Failure means the operator cannot function correctly
     Critical,

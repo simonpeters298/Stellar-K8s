@@ -1,4 +1,52 @@
 .PHONY: help build test fmt fmt-check lint clean docker-build install-crd apply-samples dev-setup ci-local benchmark benchmark-upgrade benchmark-webhook benchmark-webhook-health benchmark-webhook-compare benchmark-webhook-save benchmark-all benchmark-soroban-cache wasm-cache-build run-dev helm-lint crd-gen run-local compose-up compose-dev compose-down compose-logs quickstart
+# =============================================================================
+# Stellar-K8s Makefile
+#
+# Canonical Command Flow:
+#   Setup:    make dev-setup                  # One-time environment setup
+#   Check:    make quick                      # Fast pre-commit (fmt check + compile)
+#   CI:       make ci-local                   # Full CI pipeline (fmt + lint + audit + test + build + links)
+#   Format:   make fmt                        # Auto-format code
+#   Build:    make build                      # Release binary build
+#   Test:     make test                       # Run all tests
+#   Security: make security-all               # Audit + scan
+#   Docker:   make docker-build               # Local Docker image
+#   Cleanup:  make cleanup                    # Repo scratch + obsolete-path check
+#   Clean:    make clean                      # Remove build artifacts
+#   Health:   make health                     # Full health check
+#   Help:     make help                       # Show all targets
+#
+# See DEVELOPMENT.md for full workflow details.
+# =============================================================================
+
+.PHONY: help \
+	fmt fmt-check lint lint-strict shellcheck audit verify-mtls security-scan security-all security-report \
+	build test chaos-test ci-local quick watch \
+	docker-build docker-build-ci docker-multiarch \
+	dev-setup dev-setup-rust dev-setup-tools dev-setup-hooks health-check pre-commit pre-commit-install run run-local run-dev \
+	install-crd apply-samples crd-gen regenerate completions completions-bash completions-zsh completions-fish \
+	helm-lint helm-unittest helm-upgrade-test link-check link-check-all changelog \
+	generate-api-docs check-api-docs generate-openapi-spec check-openapi-spec docs-lint \
+	docs-build docs-serve \
+	third-party-licenses check-third-party-licenses \
+	benchmark benchmark-webhook benchmark-all \
+	benchmark-crd benchmark-helm benchmark-api benchmark-reconciliation \
+	compose-up compose-dev compose-down compose-logs \
+	bundle bundle-render bundle-generate bundle-validate bundle-build \
+	quickstart quickstart-setup quickstart-build quickstart-deploy \
+	health health-fast validate preflight test-shell all \
+	shell-safety test-shell-safety validate-yaml test-yaml-validation \
+	yaml-schema-validate test-db-migrations \
+	lint-observability-contract test-observability-contract \
+	helm-drift helm-drift-update test-helm-drift test-helm-bump \
+	collect-failure-diagnostics test-failure-diagnostics \
+	check-unreachable-modules \
+	check-pipeline-log-redaction \
+	license-headers check-license-headers \
+	check-api-contract check-api-coverage check-breaking-changes \
+	crd-benchmark \
+	compliance-test \
+	cleanup clean
 
 # Default target
 .DEFAULT_GOAL := help
@@ -20,6 +68,29 @@ help: ## Show this help
 	@echo 'Usage: make [target]'
 	@echo ''
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@echo 'Canonical Command Flow:'
+	@echo '  Setup:    make dev-setup         One-time environment setup'
+	@echo '  Check:    make quick             Fast pre-commit (fmt + cargo check)'
+	@echo '  CI:       make ci-local          Full CI pipeline locally'
+	@echo '  Format:   make fmt               Auto-format code'
+	@echo '  Build:    make build              Release binary build'
+	@echo '  Test:     make test               Run all tests'
+	@echo '  Security: make security-all       Complete security audit suite'
+	@echo '  Security: make audit              Vulnerability scan + policy check'
+	@echo '  Security: make security-report    Generate security report'
+	@echo '  Docker:   make docker-build       Local Docker image'
+	@echo '  Cleanup:  make cleanup            Scratch artifacts + obsolete-path check'
+	@echo '  Clean:    make clean              Remove build artifacts'
+	@echo ''
+	@echo 'Workflows:'
+	@echo '  make quickstart                  End-to-end local quickstart (kind cluster)'
+	@echo '  make health                      Full contributor health gate'
+	@echo '  make all                         CI checks + build + Docker image'
+	@echo ''
+	@echo 'All available targets:'
+	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_][a-zA-Z0-9_-]+:.*## / {printf "  %-28s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+
+# ── Formatting & Linting ──────────────────────────────────────────────────────
 
 fmt: ## Format code
 	$(CARGO) fmt --all
@@ -40,6 +111,119 @@ audit: ## Security audit
 	@echo "→ Running security audit..."
 	@command -v cargo-audit >/dev/null 2>&1 || cargo install --locked cargo-audit
 	@$(CARGO) audit --deny unsound || echo "⚠️  Security issues found - review before production"
+	@K8S_OPENAPI_ENABLED_VERSION=1.30 $(CARGO) clippy --workspace --all-targets \
+		--features $(CLIPPY_FEATURES) -- \
+		$(CLIPPY_BASE_FLAGS)
+
+lint-strict: ## Run clippy (adds complexity checks on top of lint; same base exceptions)
+	@echo "→ Running clippy (strict mode)..."
+	@K8S_OPENAPI_ENABLED_VERSION=1.30 $(CARGO) clippy --workspace --all-targets \
+		--features $(CLIPPY_FEATURES) -- \
+		$(CLIPPY_BASE_FLAGS) \
+		$(CLIPPY_STRICT_FLAGS)
+
+# ── Security ──────────────────────────────────────────────────────────────────
+
+audit: ## Security audit (cargo audit + deny) via consolidated lockfile gate
+	@bash scripts/dep-gate.sh
+
+verify-mtls: ## Verify mTLS inter-service encryption and rotation readiness (skips gracefully without a cluster)
+	@bash scripts/verify-mtls.sh
+
+security-scan: ## Run security scan (audit + dependency policy + shellcheck + shell safety)
+	@echo "→ Running comprehensive security scan..."
+	$(MAKE) audit
+	$(MAKE) shellcheck
+	$(MAKE) shell-safety
+	@echo "  Checking for outdated dependencies..."
+	@command -v cargo-outdated >/dev/null 2>&1 || cargo install --locked cargo-outdated
+	@$(CARGO) outdated --root-deps-only || true
+
+security-all: ## Run all security checks (audit + policy + scan + SBOM)
+	@echo "→ Running complete security audit suite..."
+	$(MAKE) audit
+	$(MAKE) shellcheck
+	$(MAKE) shell-safety
+	@echo "  Generating Software Bill of Materials..."
+	@mkdir -p security/sbom
+	@$(CARGO) tree --format "{p} {l}" > security/sbom/dependencies.txt
+	@$(CARGO) deny list --format json > security/sbom/licenses.json 2>/dev/null || true
+	@echo "  ✅ Security audit complete - SBOM available in security/sbom/"
+
+security-report: ## Generate comprehensive security report  
+	@echo "→ Generating security report..."
+	@mkdir -p security/reports
+	@echo "# Security Report - $(shell date)" > security/reports/security-report.md
+	@echo "" >> security/reports/security-report.md
+	@echo "## Vulnerability Scan" >> security/reports/security-report.md
+	@$(CARGO) audit --format json > security/reports/audit.json 2>/dev/null || true
+	@echo "" >> security/reports/security-report.md  
+	@echo "## Dependency Policy Check" >> security/reports/security-report.md
+	@$(CARGO) deny check --format json > security/reports/deny.json 2>/dev/null || true
+	@echo "" >> security/reports/security-report.md
+	@echo "## License Compliance" >> security/reports/security-report.md
+	@$(CARGO) deny list >> security/reports/security-report.md 2>/dev/null || true
+	@echo "  📊 Security report generated in security/reports/"
+
+shellcheck: ## Run shellcheck on all shell scripts
+	@echo "→ Running shellcheck..."
+	@find scripts -type f -name "*.sh" -print0 | xargs -0 shellcheck -S error || true
+
+compliance-test: ## Validate kube-bench compliance fixtures (CIS custom controls) (#1380)
+	@echo "→ Running kube-bench compliance static checks..."
+	@bash security/kube-bench/run-local.sh --check-only
+
+shell-safety: ## Static analysis gate for unsafe shell patterns (#1049)
+	@python3 scripts/check-shell-safety.py
+
+test-shell-safety: ## Unit tests for the shell safety gate (#1049)
+	@echo "→ Testing shell safety gate..."
+	@python3 -m unittest scripts.tests.test_check_shell_safety
+
+# ── Manifest validation & drift ───────────────────────────────────────────────
+
+validate-yaml: ## Repository-wide schema validation for YAML manifests (#1044)
+	@python3 scripts/validate-yaml-manifests.py
+
+test-yaml-validation: ## Unit tests for the YAML manifest validator (#1044)
+	@echo "→ Testing YAML manifest validator..."
+	@python3 -m unittest scripts.tests.test_validate_yaml_manifests
+
+yaml-schema-validate: ## yamllint + CRD schema drift + Helm-render kubeconform (#1291)
+	@echo "→ Running YAML / CRD / Helm schema validation..."
+	@bash scripts/ci/validate-yaml.sh
+
+test-db-migrations: ## Forward/rollback SQL migration harness (#1317)
+	@echo "→ Running database migration tests..."
+	@bash scripts/ci/test-db-migrations.sh
+
+lint-observability-contract: ## Block resource attributes not in the published schema (#1481)
+	@echo "→ Linting observability resource-attribute contract..."
+	@python3 scripts/ci/lint-observability-contract.py
+
+test-observability-contract: ## Unit tests for the observability contract lint (#1481)
+	@echo "→ Testing observability contract lint..."
+	@python3 -m unittest scripts.tests.test_lint_observability_contract
+	@$(CARGO) test --lib observability_contract -- --nocapture
+	@$(CARGO) test --test observability_contract -- --nocapture
+
+helm-drift: ## Detect drift between Helm templates and the committed renders (#1045)
+	@bash scripts/check-helm-drift.sh
+
+helm-drift-update: ## Regenerate the committed Helm render goldens (#1045)
+	@bash scripts/check-helm-drift.sh --update
+
+test-helm-drift: ## Bats tests for the Helm drift gate (#1045)
+	@echo "→ Testing Helm drift gate..."
+	@command -v bats >/dev/null 2>&1 || (echo "✗ bats not installed. See https://github.com/bats-core/bats-core" && exit 1)
+	@bats scripts/tests/helm-drift.bats
+
+test-helm-bump: ## Bats tests for bump-chart-version.sh (#1319)
+	@echo "→ Testing chart version bump script..."
+	@command -v bats >/dev/null 2>&1 || (echo "✗ bats not installed. See https://github.com/bats-core/bats-core" && exit 1)
+	@bats scripts/tests/bump-chart-version.bats
+
+# ── Test & Build ──────────────────────────────────────────────────────────────
 
 test: ## Run tests
 	@echo "→ Running tests..."
@@ -58,6 +242,19 @@ wasm-cache-build: ## Build the bounded Soroban cache Wasm artifact and enforce i
 
 benchmark-soroban-cache: ## Run the 10k-read Soroban cache benchmark against a running proxy
 	@node benchmarks/soroban-cache-load-test.js $(CACHE_PROXY_URL)
+chaos-test: ## Run the chaos engineering resilience suite (needs kind + Chaos Mesh)
+	@echo "→ Running chaos engineering test suite..."
+	@bash tests/chaos/run-chaos-tests.sh
+
+chaos-drill: ## Run a chaos drill against a live cluster (scripts/run-chaos-drill.sh)
+	@echo "→ Running chaos drill..."
+	@bash scripts/run-chaos-drill.sh
+
+chaos-report: ## Aggregate chaos drill results into a summary report (scripts/aggregate-chaos-results.sh)
+	@echo "→ Aggregating chaos drill results..."
+	@bash scripts/aggregate-chaos-results.sh
+
+# ── Docker ────────────────────────────────────────────────────────────────────
 
 docker-build: ## Fast local Docker build using host release binaries
 	@echo "→ Building Docker image (fast local mode)..."
@@ -73,6 +270,34 @@ docker-build-ci: ## Reproducible CI Docker build (builds binaries in container)
 
 docker-multiarch: ## Build multi-arch Docker image
 	$(DOCKER) buildx build --platform linux/amd64,linux/arm64 -t $(IMAGE_NAME):$(IMAGE_TAG) .
+docker-multiarch: ## Build the multi-arch (linux/amd64 + linux/arm64) image locally via buildx
+	@echo "→ Building multi-arch image for linux/amd64,linux/arm64..."
+	@$(DOCKER) buildx version >/dev/null 2>&1 || { \
+		echo "✗ docker buildx not available. Install the buildx builder plugin."; \
+		exit 1; \
+	}
+	DOCKER_BUILDKIT=1 $(DOCKER) buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--target runtime-local \
+		-t $(IMAGE_NAME):$(IMAGE_TAG) .
+
+# CI publishes the multi-arch image from the `container` job in
+# .github/workflows/release.yml (QEMU + buildx) on tagged releases. The
+# `make docker-multiarch` target above is the local equivalent.
+
+health: ## Run common repository health checks (format, lint, test, docs, links)
+	@bash scripts/repo-health.sh
+
+health-fast: ## Fast health gate (format, lint, compile only)
+	@bash scripts/repo-health.sh --fast
+
+validate: health-fast ## Fast validation (alias for health-fast)
+
+# ── Quality & Health ───────────────────────────────────────────────────────────
+
+check-unreachable-modules: ## Static check for unreachable modules and dead code paths (#1150)
+	@echo "→ Checking unreachable modules and dead code paths..."
+	@$(CARGO) run --quiet --locked --bin check-unreachable-modules
 
 ci-local: fmt-check lint audit test build ## Run full CI locally
 	@echo ""
@@ -87,10 +312,8 @@ pre-commit: ## Run pre-commit hooks manually
 	@command -v pre-commit >/dev/null 2>&1 || (echo "✗ pre-commit not installed. Run: make dev-setup" && exit 1)
 	@pre-commit run --all-files
 
-pre-commit-install: ## Install pre-commit hooks
-	@command -v pre-commit >/dev/null 2>&1 || pip install pre-commit
-	pre-commit install
-	pre-commit install --hook-type pre-push
+pre-commit-install: dev-setup-hooks ## Install pre-commit hooks (alias for dev-setup-hooks)
+	@echo "✓ pre-commit hooks installed"
 
 clean: ## Clean build artifacts
 	$(CARGO) clean
@@ -109,8 +332,38 @@ check-api-docs: ## Check API docs are up to date (used in CI)
 		--output docs/api-reference.md \
 		--check
 
+generate-openapi-spec: ## Validate operator REST OpenAPI specification
+	@echo "→ Validating OpenAPI specification..."
+	@python3 scripts/generate-openapi-spec.py --spec docs/api/openapi.yaml
+	@echo "✓ docs/api/openapi.yaml is valid"
+
+docs-lint: ## Run rustdoc with warnings-as-errors (issue #1138: strict docs quality gate)
+	@echo "→ Running cargo doc with RUSTDOCFLAGS=-D warnings..."
+	@RUSTDOCFLAGS="-D warnings" K8S_OPENAPI_ENABLED_VERSION=1.30 \
+		$(CARGO) doc --no-deps --workspace \
+		--features "rest-api,metrics,admission-webhook,k8s-v1-30"
+	@echo "✓ rustdoc passed — no documentation warnings"
+
+check-openapi-spec: ## Fail if OpenAPI spec is missing required operator routes
+	@echo "→ Checking OpenAPI spec coverage..."
+	@python3 scripts/generate-openapi-spec.py --spec docs/api/openapi.yaml --check
+
+# ── Documentation Site ────────────────────────────────────────────────────────
+
+docs-build: ## Build the documentation site into site/
+	@echo "→ Building documentation site (mkdocs)..."
+	@python3 -m mkdocs build
+	@echo "✓ Documentation site written to site/"
+
+docs-serve: ## Serve the documentation site locally (http://127.0.0.1:8000)
+	@echo "→ Serving documentation at http://127.0.0.1:8000 (Ctrl+C to stop)"
+	@python3 -m mkdocs serve
+
+# ── Kubernetes ────────────────────────────────────────────────────────────────
+
 install-crd: ## Install CRDs
 	$(KUBECTL) apply -f config/crd/stellarnode-crd.yaml
+	$(KUBECTL) apply -f config/crd/contractdeployment-crd.yaml
 
 apply-samples: install-crd ## Apply samples
 	$(KUBECTL) apply -f config/samples/
@@ -118,6 +371,69 @@ apply-samples: install-crd ## Apply samples
 crd-gen: ## Generate CRDs
 	@echo "→ Generating CRDs..."
 	@$(CARGO) run --bin crdgen > config/crd/stellarnode-crd.yaml
+	@$(CARGO) run --bin crdgen | python3 scripts/sort-manifests.py > config/crd/stellarnode-crd.yaml
+	@$(CARGO) run --bin contract-crdgen | python3 scripts/sort-manifests.py > config/crd/contractdeployment-crd.yaml
+	@echo "✓ CRD written to config/crd/stellarnode-crd.yaml (deterministic order)"
+
+regenerate: crd-gen generate-api-docs bundle ## Regenerate all derived artifacts (CRDs, API docs, OLM bundle)
+	@echo "✓ All generated artifacts are up to date"
+	@echo "  See docs/development/regeneration-guide.md for details"
+
+preflight: ## Check that required tools are installed (pass --labels to also verify repo labels)
+	@bash scripts/preflight.sh $(ARGS)
+
+test-shell: ## Run bats unit tests for the cleanup tool and shared shell helpers
+	@echo "→ Running cleanup tool bats tests..."
+	@command -v bats >/dev/null 2>&1 || (echo "✗ bats not installed. See https://github.com/bats-core/bats-core" && exit 1)
+	@bats scripts/tests/cleanup.bats
+
+collect-failure-diagnostics: ## Assemble a local CI failure diagnostics bundle (#1151)
+	@echo "→ Assembling failure diagnostics bundle..."
+	@chmod +x scripts/ci/collect-failure-diagnostics.sh
+	@./scripts/ci/collect-failure-diagnostics.sh --no-cluster \
+		--bundle-dir "$${BUNDLE_DIR:-/tmp/ci-diagnostics}" \
+		--job-name "$${JOB_NAME:-local}"
+
+test-failure-diagnostics: ## Verify the unified diagnostics collector (#1151)
+	@echo "→ Testing failure diagnostics collector..."
+	@command -v bats >/dev/null 2>&1 || (echo "✗ bats not installed. See https://github.com/bats-core/bats-core" && exit 1)
+	@bats scripts/tests/failure-diagnostics.bats
+
+check-pipeline-log-redaction: ## Enforce secret redaction on pipeline command logs (#1153)
+	@echo "→ Checking pipeline log secret redaction..."
+	@$(CARGO) run --quiet --locked --bin check-pipeline-log-redaction -- \
+		--fixture tests/fixtures/pipeline_logs/dirty-ci-sample.txt
+
+# ── Issue #1286: License header enforcement ───────────────────────────────────
+
+license-headers: ## Check license headers on Rust/Shell/YAML files (#1286)
+	@echo "→ Checking license headers..."
+	@python3 scripts/check-license-headers.py
+
+check-license-headers: license-headers ## Alias for license-headers
+
+# ── Issue #1287: CRD performance regression ───────────────────────────────────
+
+crd-benchmark: ## Build CRD operation benchmarks (#1287)
+	@echo "→ Building CRD benchmarks..."
+	@$(CARGO) bench --bench crd_operations --no-run
+	@echo "✓ CRD benchmarks compiled (run with: cargo bench --bench crd_operations)"
+
+# ── Issue #1288: API contract testing ─────────────────────────────────────────
+
+check-api-contract: ## Validate API contract against OpenAPI spec (#1288)
+	@echo "→ Validating API contract..."
+	@python3 scripts/check-api-contract.py check --spec docs/api/openapi.yaml
+
+check-api-coverage: ## Check API endpoint coverage exceeds 90% (#1288)
+	@echo "→ Checking API endpoint coverage..."
+	@python3 scripts/check-api-contract.py coverage --spec docs/api/openapi.yaml --min-coverage 90
+
+check-breaking-changes: ## Detect breaking API changes vs base branch (#1288)
+	@echo "→ Detecting breaking API changes..."
+	@python3 scripts/check-api-contract.py breaking \
+		--base /tmp/base-openapi.yaml \
+		--head docs/api/openapi.yaml
 
 completions: ## Generate shell completion scripts
 	@echo "→ Generating shell completions..."
@@ -174,6 +490,12 @@ benchmark-upgrade: ## Run upgrade load test with k6
 
 run-local: build ## Run locally
 	RUST_LOG=info ./target/release/stellar-operator
+# ── Running the Operator ──────────────────────────────────────────────────────
+
+run-local: build ## Run operator locally from built release binary
+	RUST_LOG=info ./target/release/stellar-operator run
+
+run: run-local ## Run the operator (alias for run-local; matches README and CI references)
 
 run-dev: ## Run operator in dev mode with hot reload
 	RUST_LOG=debug cargo watch -x run

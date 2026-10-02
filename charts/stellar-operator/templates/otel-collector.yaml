@@ -25,6 +25,45 @@ data:
       memory_limiter:
         check_interval: 1s
         limit_mib: 200
+      # Issue #1481: stamp the contract version without rewriting valid identity.
+      transform/contract:
+        error_mode: ignore
+        trace_statements:
+          - context: resource
+            statements:
+              - set(attributes["stellar.observability.contract.version"], "1.0.0") where attributes["stellar.observability.contract.version"] == nil
+        metric_statements:
+          - context: resource
+            statements:
+              - set(attributes["stellar.observability.contract.version"], "1.0.0") where attributes["stellar.observability.contract.version"] == nil
+        log_statements:
+          - context: resource
+            statements:
+              - set(attributes["stellar.observability.contract.version"], "1.0.0") where attributes["stellar.observability.contract.version"] == nil
+      # Main pipeline: drop (route away) signals missing required identity.
+      filter/drop_invalid:
+        error_mode: ignore
+        traces:
+          span:
+            - 'resource.attributes["service.name"] == nil or resource.attributes["service.instance.id"] == nil or resource.attributes["k8s.pod.name"] == nil or resource.attributes["k8s.namespace.name"] == nil or resource.attributes["k8s.node.name"] == nil or resource.attributes["stellar.observability.contract.version"] == nil'
+        metrics:
+          metric:
+            - 'resource.attributes["service.name"] == nil or resource.attributes["service.instance.id"] == nil or resource.attributes["k8s.pod.name"] == nil or resource.attributes["k8s.namespace.name"] == nil or resource.attributes["k8s.node.name"] == nil or resource.attributes["stellar.observability.contract.version"] == nil'
+        logs:
+          log_record:
+            - 'resource.attributes["service.name"] == nil or resource.attributes["service.instance.id"] == nil or resource.attributes["k8s.pod.name"] == nil or resource.attributes["k8s.namespace.name"] == nil or resource.attributes["k8s.node.name"] == nil or resource.attributes["stellar.observability.contract.version"] == nil'
+      # Dead-letter pipeline: keep only violating signals (never silently drop).
+      filter/keep_invalid:
+        error_mode: ignore
+        traces:
+          span:
+            - 'resource.attributes["service.name"] != nil and resource.attributes["service.instance.id"] != nil and resource.attributes["k8s.pod.name"] != nil and resource.attributes["k8s.namespace.name"] != nil and resource.attributes["k8s.node.name"] != nil and resource.attributes["stellar.observability.contract.version"] != nil'
+        metrics:
+          metric:
+            - 'resource.attributes["service.name"] != nil and resource.attributes["service.instance.id"] != nil and resource.attributes["k8s.pod.name"] != nil and resource.attributes["k8s.namespace.name"] != nil and resource.attributes["k8s.node.name"] != nil and resource.attributes["stellar.observability.contract.version"] != nil'
+        logs:
+          log_record:
+            - 'resource.attributes["service.name"] != nil and resource.attributes["service.instance.id"] != nil and resource.attributes["k8s.pod.name"] != nil and resource.attributes["k8s.namespace.name"] != nil and resource.attributes["k8s.node.name"] != nil and resource.attributes["stellar.observability.contract.version"] != nil'
 
     exporters:
       {{- if .Values.otel.collector.config.honeycomb.enabled }}
@@ -58,12 +97,25 @@ data:
       # backend configured (useful for local development).
       debug:
         verbosity: basic
+      file/deadletter:
+        path: /var/lib/otel/deadletter/quarantine.json
+        rotation:
+          max_megabytes: 100
+          max_days: 7
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
 
     service:
+      extensions: [health_check]
+      telemetry:
+        metrics:
+          address: 0.0.0.0:8888
       pipelines:
         traces:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, transform/contract, filter/drop_invalid, batch]
           exporters:
             - debug
             {{- if .Values.otel.collector.config.honeycomb.enabled }}
@@ -75,9 +127,24 @@ data:
             {{- if .Values.otel.collector.config.tempo.enabled }}
             - otlp/tempo
             {{- end }}
+        traces/deadletter:
+          receivers: [otlp]
+          processors: [transform/contract, filter/keep_invalid, batch]
+          exporters:
+            - file/deadletter
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/contract, filter/drop_invalid, batch]
+          exporters:
+            - debug
+        metrics/deadletter:
+          receivers: [otlp]
+          processors: [transform/contract, filter/keep_invalid, batch]
+          exporters:
+            - file/deadletter
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, transform/contract, filter/drop_invalid, batch]
           exporters:
             - debug
             {{- if .Values.otel.collector.config.loki.enabled }}
@@ -86,6 +153,11 @@ data:
             {{- if .Values.otel.collector.config.elasticsearch.enabled }}
             - elasticsearch
             {{- end }}
+        logs/deadletter:
+          receivers: [otlp]
+          processors: [transform/contract, filter/keep_invalid, batch]
+          exporters:
+            - file/deadletter
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -116,6 +188,8 @@ spec:
         - name: config
           configMap:
             name: {{ include "stellar-operator.fullname" . }}-otel-collector
+        - name: deadletter
+          emptyDir: {}
       {{- if .Values.otel.collector.config.honeycomb.enabled }}
       {{- if .Values.otel.collector.config.honeycomb.apiKeySecretRef }}
       initContainers: []
@@ -141,9 +215,14 @@ spec:
             - name: otlp-http
               containerPort: 4318
               protocol: TCP
+            - name: metrics
+              containerPort: 8888
+              protocol: TCP
           volumeMounts:
             - name: config
               mountPath: /conf
+            - name: deadletter
+              mountPath: /var/lib/otel/deadletter
           resources:
             {{- toYaml .Values.otel.collector.resources | nindent 12 }}
           securityContext:
@@ -181,5 +260,9 @@ spec:
     - name: otlp-http
       port: 4318
       targetPort: otlp-http
+      protocol: TCP
+    - name: metrics
+      port: 8888
+      targetPort: metrics
       protocol: TCP
 {{- end }}

@@ -73,7 +73,10 @@ PROFILES=(
 # outages or security regressions in production.
 HIGH_RISK_PATTERNS=(
   'image:'
-  'replicaCount:'
+  # Rendered Deployments use the Kubernetes `replicas` field; `replicaCount` is
+  # the chart value name and never appears in rendered output, so matching it
+  # would make this guard silently ineffective.
+  'replicas:'
   'resources:'
   'rules:'
   'secrets:'
@@ -166,7 +169,9 @@ yaml_diff() {
     diff -u "${left}" "${right}" > "${output}" 2>&1 || true
   fi
 
-  [[ -s "${output}" ]]
+  # Identical files produce an empty diff, so invert the emptiness test to
+  # match the documented contract: 0 = identical, 1 = different.
+  [[ ! -s "${output}" ]]
 }
 
 # ── Check for high-risk field changes in a diff ──────────────────────────────

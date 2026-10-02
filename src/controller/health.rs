@@ -313,7 +313,7 @@ async fn check_horizon_health(
                     warn!("Failed to parse Horizon health response: {}", e);
                     // If we can't parse the response, assume it's still starting up
                     Ok(HealthCheckResult::syncing(
-                        "Health endpoint returned unparseable response".to_string(),
+                        "Health endpoint returned unparsable response".to_string(),
                         None,
                     ))
                 }
@@ -394,7 +394,7 @@ async fn check_soroban_health(
                 Err(e) => {
                     warn!("Failed to parse Soroban health response: {}", e);
                     Ok(HealthCheckResult::syncing(
-                        "Health endpoint returned unparseable response".to_string(),
+                        "Health endpoint returned unparsable response".to_string(),
                         None,
                     ))
                 }

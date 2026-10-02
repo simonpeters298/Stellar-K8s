@@ -439,6 +439,43 @@ pub async fn run_operator(args: RunArgs) -> Result<(), Error> {
     }
 
     {
+        let deployment_client = client.clone();
+        let deployment_is_leader = Arc::clone(&is_leader);
+        let deployment_watch_namespace = state.watch_namespace.clone();
+        tokio::spawn(async move {
+            if let Err(error) = controller::soroban_contracts::run_contract_deployment_controller(
+                deployment_client,
+                deployment_is_leader,
+                deployment_watch_namespace,
+            )
+            .await
+            {
+                tracing::error!(%error, "Soroban contract deployment controller stopped");
+            }
+        });
+    }
+
+    #[cfg(feature = "metrics")]
+    if let Ok(rpc_url) = std::env::var("FEE_MARKET_RPC_URL") {
+        let network = std::env::var("FEE_MARKET_NETWORK").unwrap_or_else(|_| "unknown".into());
+        let threshold = std::env::var("FEE_MARKET_SPIKE_THRESHOLD_STROOPS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10_000);
+        let fee_market_is_leader = Arc::clone(&is_leader);
+        tokio::spawn(async move {
+            controller::fee_market::run_fee_market_collector(
+                rpc_url,
+                network,
+                threshold,
+                fee_market_is_leader,
+            )
+            .await;
+        });
+        info!("Soroban fee market collector enabled");
+    }
+
+    {
         let snapshot_client = client.clone();
         let snapshot_reporter = kube::runtime::events::Reporter {
             controller: "stellar-operator-snapshot-worker".to_string(),

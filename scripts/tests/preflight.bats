@@ -113,7 +113,9 @@ _stub_all_at_pin() {
 
   run env PATH="${dir}:/usr/bin:/bin" bash "${PREFLIGHT}"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"helm not found in PATH (requires >= ${PINNED_HELM})"* ]]
+  # The tool IS on PATH, so preflight must report the unparseable version
+  # rather than claim the binary is missing.
+  [[ "$output" == *"helm version could not be parsed (requires >= ${PINNED_HELM})"* ]]
 
   rm -rf "${dir}"
 }

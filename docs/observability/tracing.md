@@ -49,6 +49,14 @@ delegation or the API gateway should show **one trace id** with nested spans
 In-cluster, set `otel.collector.config.jaeger.enabled` or `.tempo.enabled` in
 Helm values. The bundled collector image is `otel/opentelemetry-collector-contrib`.
 
+## Unified resource-attribute contract (issue #1481)
+
+Logs, metrics, and traces share the catalog in
+[`schemas/observability/resource-attributes.v1.json`](../../schemas/observability/resource-attributes.v1.json).
+Every accepted payload includes `stellar.observability.contract.version`.
+The collector quarantines violations to `file/deadletter` instead of dropping
+them. See [unified-contract.md](unified-contract.md).
+
 ## Trace / log correlation
 
 Structured logs use the field names in `src/logging/fields.rs`:

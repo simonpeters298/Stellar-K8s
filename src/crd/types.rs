@@ -230,6 +230,24 @@ pub struct SnapshotRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_url: Option<String>,
 
+    /// Expected SHA-256 hex digest of the downloaded archive. Restore fails before extraction
+    /// when the artifact does not match this digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+
+    /// Expected source ledger sequence, checked against the export manifest after extraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_ledger_sequence: Option<u64>,
+
+    /// Expected source network name, checked against the export manifest after extraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_network: Option<String>,
+
+    /// Configure object-storage export on the source node. Trigger with the
+    /// `stellar.org/request-ledger-export=true` annotation while the node is suspended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export: Option<LedgerSnapshotExportConfig>,
+
     /// Name of a Kubernetes Secret containing credentials for the backup URL.
     ///
     /// For S3 URLs the secret must have keys `AWS_ACCESS_KEY_ID` and
@@ -243,6 +261,17 @@ pub struct SnapshotRef {
     /// Defaults to `amazon/aws-cli:latest` for S3 URLs and `alpine:3` for HTTPS.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restore_image: Option<String>,
+}
+
+/// Object-storage destination for a ledger state export.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerSnapshotExportConfig {
+    /// S3 URI prefix, such as `s3://bucket/migrations/validator-a`.
+    pub destination: String,
+
+    /// Secret with AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and optional AWS_DEFAULT_REGION.
+    pub credentials_secret_ref: String,
 }
 
 /// Storage configuration for persistent data
@@ -903,6 +932,13 @@ pub struct HorizonConfig {
     pub enable_experimental_ingestion: bool,
     #[serde(default = "default_true")]
     pub auto_migration: bool,
+    /// Enable leader election for ingestion across multiple Horizon replicas.
+    /// Exactly one replica ingests while standby replicas serve API-only traffic.
+    #[serde(default)]
+    pub enable_ingestion_leader_election: bool,
+    /// Lease duration in seconds for Horizon ingestion leader election (default: 15s).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingestion_lease_duration_seconds: Option<i32>,
 }
 
 fn default_true() -> bool {
@@ -913,7 +949,7 @@ fn default_ingest_workers() -> u32 {
     1
 }
 
-/// Captive Core configuration for Soroban RPC
+/// Captive Core configuration for Soroban RPC and Horizon ingestion
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptiveCoreConfig {
@@ -929,6 +965,18 @@ pub struct CaptiveCoreConfig {
     pub log_level: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_config: Option<String>,
+    /// Explicit database connection string for captive core (e.g. "sqlite3:///var/lib/stellar/captive-core/stellar.db").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    /// Directory path for bucket storage on persistent volume (e.g. "/var/lib/stellar/buckets").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket_dir_path: Option<String>,
+    /// Directory path for temporary files on persistent volume (e.g. "/var/lib/stellar/tmp").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmp_dir_path: Option<String>,
+    /// Number of worker threads for captive core (derived from container CPU limits if unset).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_threads: Option<u32>,
 }
 
 /// Bounded cache configuration for read-only Soroban RPC state requests.
@@ -989,6 +1037,8 @@ impl SorobanCacheConfig {
         .map_err(|error| format!("invalid Soroban cache configuration: {error:?}"))
     }
 }
+/// Type alias for Soroban RPC configuration
+pub type SorobanRpcConfig = SorobanConfig;
 
 /// Soroban RPC server configuration
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
@@ -1010,6 +1060,29 @@ pub struct SorobanConfig {
     /// Optional bounded fail-open cache for read-only state RPC methods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<SorobanCacheConfig>,
+    /// Maximum page size (limit) for RPC queries like getEvents and getLedgerEntries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_page_size: Option<u32>,
+    /// Size of LRU cache for ledger entries in megabytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_size_mb: Option<u32>,
+    /// Multi-layered cache configuration (L1 in-memory LRU + L2 local-SSD).
+    /// When set, the operator provisions an emptyDir volume and injects cache
+    /// path / size env vars into the Soroban RPC container.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_config: Option<crate::controller::soroban_cache::SorobanCacheConfig>,
+}
+
+impl SorobanConfig {
+    /// Return the configured max page size or default (100)
+    pub fn effective_max_page_size(&self) -> u32 {
+        self.max_page_size.unwrap_or(100).max(1)
+    }
+
+    /// Return the configured cache size in MB or default (256 MB)
+    pub fn effective_cache_size_mb(&self) -> u32 {
+        self.cache_size_mb.unwrap_or(256).max(1)
+    }
 }
 
 /// External database configuration for managed Postgres databases
@@ -1120,7 +1193,7 @@ pub struct AutoscalingConfig {
     /// Predictive scaling configuration.
     ///
     /// When enabled, the operator uses a Holt-Winters forecasting model to
-    /// predict the next hour's ledger volume and pre-emptively adjusts
+    /// predict the next hour's ledger volume and preemptively adjusts
     /// `minReplicas` before traffic spikes occur.
     ///
     /// Only applicable to `Horizon` nodes.
@@ -1962,6 +2035,67 @@ pub struct DRDrillResult {
     pub completed_at: Option<String>,
 }
 
+/// Workload scheduling tier used by cost-aware placement (#1484).
+///
+/// Critical workloads are never placed on spot capacity. Best-effort
+/// workloads preferentially land on spot when topology and affinity allow.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkloadTier {
+    /// Consensus, public API, and other stateful production services.
+    Critical,
+    /// Interruptible / batch / indexer-class work that may use spot.
+    BestEffort,
+}
+
+impl WorkloadTier {
+    /// Parse a label or annotation value (`critical`, `best-effort`, `bestEffort`).
+    pub fn parse_label(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "critical" => Some(Self::Critical),
+            "best-effort" | "besteffort" | "best_effort" => Some(Self::BestEffort),
+            _ => None,
+        }
+    }
+
+    /// Canonical Kubernetes label value.
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::BestEffort => "best-effort",
+        }
+    }
+}
+
+/// Node / node-group capacity class (#1484).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapacityClass {
+    /// Interruptible / preemptible capacity.
+    Spot,
+    /// Guaranteed on-demand capacity.
+    OnDemand,
+}
+
+impl CapacityClass {
+    /// Parse a node label value (`spot`, `on-demand`, `ondemand`, `preemptible`).
+    pub fn parse_label(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "spot" | "preemptible" | "preempt" => Some(Self::Spot),
+            "on-demand" | "ondemand" | "on_demand" | "regular" => Some(Self::OnDemand),
+            _ => None,
+        }
+    }
+
+    /// Canonical Kubernetes label value.
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Spot => "spot",
+            Self::OnDemand => "on-demand",
+        }
+    }
+}
+
 /// Placement configuration for intelligent pod scheduling.
 /// Enables SCP-aware anti-affinity to ensure validator resilience.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
@@ -1972,6 +2106,16 @@ pub struct PlacementConfig {
     /// placing nodes from the same quorum slice on the same physical host.
     #[serde(default)]
     pub scp_aware_anti_affinity: bool,
+
+    /// Explicit workload tier. When unset, inferred from `nodeType`
+    /// (Validator and Horizon default to critical).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workload_tier: Option<WorkloadTier>,
+
+    /// Preferred capacity class for best-effort workloads (defaults to spot).
+    /// Ignored for critical workloads, which always require on-demand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_capacity_class: Option<CapacityClass>,
 
     /// Jurisdictional compliance configuration.
     ///

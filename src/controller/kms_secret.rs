@@ -268,7 +268,7 @@ async fn reconcile_external_secret(
         Api::namespaced(client.clone(), &namespace);
 
     // Use the dynamic API to apply the ExternalSecret.
-    // We re-use the kube DynamicObject path via raw JSON patch.
+    // We reuse the kube DynamicObject path via raw JSON patch.
     let _dynamic_api = kube::api::DynamicObject::new(
         &er.name,
         &kube::discovery::ApiResource {

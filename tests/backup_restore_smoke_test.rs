@@ -10,10 +10,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-// tests/backup_restore_smoke_test.rs
-// Command-level smoke tests for backup and restore CLI commands.
-// These tests validate end-to-end behavior using assert-cmd.
-// Related: #1149 - Add command-level smoke tests for backup and restore workflows
+
+//! Command-level smoke tests for backup and restore workflows.
+//!
+//! These tests validate that the backup and restore CLI commands work correctly
+//! end-to-end with the file backend. This ensures the core backup/restore workflows
+//! are functional and catches regressions.
+//!
+//! Related: #1149 - Add command-level smoke tests for backup and restore workflows
 
 use assert_cmd::Command;
 use predicates::prelude::*;

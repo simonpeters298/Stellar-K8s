@@ -48,7 +48,10 @@ pub fn profiling_runtime_enabled() -> bool {
 }
 
 /// Parse and bound the `seconds` query parameter for CPU profiling.
-pub fn parse_cpu_seconds(raw: Option<&str>) -> Result<u64, (StatusCode, Json<ErrorResponse>)> {
+///
+/// The error is boxed: the `(StatusCode, Json<ErrorResponse>)` tuple exceeds
+/// the `result_large_err` threshold, and this parser sits off the hot path.
+pub fn parse_cpu_seconds(raw: Option<&str>) -> Result<u64, Box<(StatusCode, Json<ErrorResponse>)>> {
     let Some(raw) = raw else {
         return Ok(DEFAULT_CPU_SECONDS);
     };
@@ -57,16 +60,16 @@ pub fn parse_cpu_seconds(raw: Option<&str>) -> Result<u64, (StatusCode, Json<Err
         return Ok(DEFAULT_CPU_SECONDS);
     }
     let seconds: u64 = trimmed.parse().map_err(|_| {
-        (
+        Box::new((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_parameter",
                 "seconds must be a positive integer",
             )),
-        )
+        ))
     })?;
     if !(MIN_CPU_SECONDS..=MAX_CPU_SECONDS).contains(&seconds) {
-        return Err((
+        return Err(Box::new((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_parameter",
@@ -74,7 +77,7 @@ pub fn parse_cpu_seconds(raw: Option<&str>) -> Result<u64, (StatusCode, Json<Err
                     "seconds must be between {MIN_CPU_SECONDS} and {MAX_CPU_SECONDS} inclusive"
                 ),
             )),
-        ));
+        )));
     }
     Ok(seconds)
 }
@@ -158,7 +161,7 @@ mod handlers {
     pub async fn cpu_profile(
         Query(q): Query<CpuProfileQuery>,
     ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-        let seconds = parse_cpu_seconds(q.seconds.as_deref())?;
+        let seconds = parse_cpu_seconds(q.seconds.as_deref()).map_err(|err| *err)?;
         // Only protobuf is supported. SVG flamegraphs would pull in `inferno`
         // (CDDL-1.0), which is outside this repository's cargo-deny allowlist.
         // Operators render flamegraphs locally with `pprof` / `go tool pprof`.
@@ -320,7 +323,8 @@ use handlers::{cpu_profile, heap_profile};
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64};
-    use std::sync::{Arc, Mutex, MutexGuard};
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, MutexGuard};
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -339,10 +343,11 @@ mod tests {
     use super::*;
 
     /// Serialize env mutations for profiling route-registration tests.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// Async-aware so the guard may be held across `.await` points.
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
 
-    fn lock_env() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    async fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().await
     }
 
     fn make_reload_handle() -> tracing_subscriber::reload::Handle<EnvFilter, Registry> {
@@ -586,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_disabled_profiling_routes_not_registered() {
-        let _guard = lock_env();
+        let _guard = lock_env().await;
         let previous = std::env::var(PROFILING_ENABLED_ENV).ok();
         std::env::remove_var(PROFILING_ENABLED_ENV);
         std::env::set_var(PROFILING_ENABLED_ENV, "false");
@@ -616,7 +621,7 @@ mod tests {
     #[cfg(feature = "profiling")]
     #[tokio::test]
     async fn runtime_enabled_profiling_routes_registered() {
-        let _guard = lock_env();
+        let _guard = lock_env().await;
         let previous = std::env::var(PROFILING_ENABLED_ENV).ok();
         std::env::set_var(PROFILING_ENABLED_ENV, "true");
 
@@ -646,7 +651,7 @@ mod tests {
     #[cfg(not(feature = "profiling"))]
     #[tokio::test]
     async fn without_profiling_feature_routes_unavailable_even_if_env_set() {
-        let _guard = lock_env();
+        let _guard = lock_env().await;
         let previous = std::env::var(PROFILING_ENABLED_ENV).ok();
         std::env::set_var(PROFILING_ENABLED_ENV, "true");
 

@@ -127,6 +127,18 @@ pub const TRACE_ID: &str = "trace_id";
 /// W3C span ID, injected by `OtelTraceIdLayer` (`span_id`).
 pub const SPAN_ID: &str = "span_id";
 
+/// Observability contract version (`stellar_observability_contract_version`).
+pub const CONTRACT_VERSION: &str = "stellar_observability_contract_version";
+
+/// Canonical pod name used for log-to-trace pivots (`k8s_pod_name`).
+pub const K8S_POD_NAME: &str = "k8s_pod_name";
+
+/// Service instance identity, typically the pod UID (`service_instance_id`).
+pub const SERVICE_INSTANCE_ID: &str = "service_instance_id";
+
+/// Logical service name (`service_name`).
+pub const SERVICE_NAME: &str = "service_name";
+
 // ── Correlation ──────────────────────────────────────────────────────────────────
 
 /// Request correlation ID propagated across service boundaries (`correlation_id`).
@@ -142,6 +154,18 @@ pub const GIT_SHA: &str = "git_sha";
 
 /// Cargo feature flags active during the build (`features`).
 pub const FEATURES: &str = "features";
+
+// ── Network / connection ───────────────────────────────────────────────────────
+
+/// Remote peer address (IP:port) for connection-level events (`peer_addr`).
+///
+/// Use `%addr` (Display) so the value is `"203.0.113.1:40000"` in JSON.
+pub const PEER_ADDR: &str = "peer_addr";
+
+/// Inbound/outbound HTTP or gRPC request identifier (`request_id`).
+///
+/// Typically a UUID or ULID injected by the API gateway middleware.
+pub const REQUEST_ID: &str = "request_id";
 
 // ── Validation helpers ─────────────────────────────────────────────────────────
 
@@ -165,10 +189,16 @@ pub const ALL_FIELDS: &[&str] = &[
     SCRUB_PATTERN,
     TRACE_ID,
     SPAN_ID,
+    CONTRACT_VERSION,
+    K8S_POD_NAME,
+    SERVICE_INSTANCE_ID,
+    SERVICE_NAME,
     CORRELATION_ID,
     CI_STEP,
     GIT_SHA,
     FEATURES,
+    PEER_ADDR,
+    REQUEST_ID,
 ];
 
 #[cfg(test)]
@@ -219,5 +249,10 @@ mod tests {
         assert_eq!(TRACE_ID, "trace_id");
         assert_eq!(SPAN_ID, "span_id");
         assert_eq!(DURATION_MS, "duration_ms");
+        assert_eq!(PEER_ADDR, "peer_addr");
+        assert_eq!(REQUEST_ID, "request_id");
+        assert_eq!(CORRELATION_ID, "correlation_id");
+        assert_eq!(CI_STEP, "ci_step");
+        assert_eq!(GIT_SHA, "git_sha");
     }
 }

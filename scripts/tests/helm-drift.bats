@@ -171,8 +171,9 @@ teardown() {
   export MUTATED
   cp "${MUTATED}" "${BATS_TEST_TMPDIR}/backup"
 
-  # Change image tag to trigger high-risk drift
-  sed -i 's|image: ghcr.io/stellar/stellar-k8s:.*|image: ghcr.io/stellar/stellar-k8s:v99.0.0|' "${MUTATED}"
+  # The template resolves the operator image through a helper, so pin it to a
+  # literal tag to force a real, image-related change in the rendered output.
+  sed -i 's|image: {{ include "stellar-operator.operatorImage" . }}|image: ghcr.io/stellar/stellar-k8s:v99.0.0|' "${MUTATED}"
 
   run bash "${DRIFT}" --profile default --check-high-risk
   [ "$status" -eq 1 ]
@@ -180,14 +181,15 @@ teardown() {
   [[ "$output" == *"HIGH-RISK FIELD DRIFT"* ]] || [[ "$output" == *"HIGH-RISK"* ]]
 }
 
-@test "--check-high-risk detects replicaCount drift as high-risk" {
+@test "--check-high-risk detects replica drift as high-risk" {
   _require_helm
   MUTATED="${TEMPLATE_DIR}/deployment.yaml"
   export MUTATED
   cp "${MUTATED}" "${BATS_TEST_TMPDIR}/backup"
 
-  # Change replica count
-  sed -i 's/replicaCount: 1/replicaCount: 5/' "${MUTATED}"
+  # Change the rendered replica count (the template uses `replicas:`, the value
+  # is `.Values.replicaCount`).
+  sed -i 's|replicas: {{ .Values.replicaCount }}|replicas: 5|' "${MUTATED}"
 
   run bash "${DRIFT}" --profile default --check-high-risk
   [ "$status" -eq 1 ]
@@ -201,12 +203,15 @@ teardown() {
   export MUTATED
   cp "${MUTATED}" "${BATS_TEST_TMPDIR}/backup"
 
-  # Add a non-high-risk comment
-  printf '\n# cosmetic change\n' >> "${MUTATED}"
+  # imagePullPolicy is a real, rendered field that is not high-risk. A
+  # template comment would not change the render at all, so it could never
+  # produce drift.
+  sed -i 's|imagePullPolicy: {{ .Values.image.pullPolicy }}|imagePullPolicy: IfNotPresent|' "${MUTATED}"
+  grep -q 'imagePullPolicy: IfNotPresent' "${MUTATED}"
 
   run bash "${DRIFT}" --profile default --check-high-risk
   [ "$status" -eq 1 ]
   [[ "$output" == *"drifted from the golden file"* ]]
-  # Should NOT report high-risk drift for a comment-only change
+  # Should NOT report high-risk drift for a non-high-risk change
   [[ "$output" != *"HIGH-RISK FIELD DRIFT"* ]] && [[ "$output" != *"HIGH-RISK"* ]]
 }

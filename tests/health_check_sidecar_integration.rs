@@ -20,6 +20,7 @@ use tower::ServiceExt;
 async fn test_health_check_sidecar_liveness() {
     let state = HealthCheckState {
         core_url: "http://localhost:11626".to_string(),
+        peer_connectivity: Arc::new(RwLock::new(None)),
         sync_status: Arc::new(RwLock::new(SyncStatus::default())),
     };
 
@@ -43,6 +44,7 @@ async fn test_health_check_sidecar_liveness() {
 async fn test_health_check_sidecar_readiness_unsynced() {
     let state = HealthCheckState {
         core_url: "http://localhost:11626".to_string(),
+        peer_connectivity: Arc::new(RwLock::new(None)),
         sync_status: Arc::new(RwLock::new(SyncStatus {
             is_synced: false,
             ledger_num: 100,
@@ -71,6 +73,7 @@ async fn test_health_check_sidecar_readiness_unsynced() {
 async fn test_health_check_sidecar_readiness_synced() {
     let state = HealthCheckState {
         core_url: "http://localhost:11626".to_string(),
+        peer_connectivity: Arc::new(RwLock::new(None)),
         sync_status: Arc::new(RwLock::new(SyncStatus {
             is_synced: true,
             ledger_num: 1000,
